@@ -1,0 +1,19 @@
+# Chặn file ảo và cache
+.venv/
+__pycache__/
+*.pyc
+.idea/
+
+# Chặn file Build và thư mục nặng (QUAN TRỌNG)
+dist/
+build/
+bin/
+
+# Chặn Model AI nặng
+models/*.gguf
+models/*.bin
+models/*.pth
+
+# Chặn file rác khác
+*.spec
+*.log
