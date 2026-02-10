@@ -25,6 +25,7 @@ Draco AI is an intelligent virtual assistant that runs completely **Offline** on
 
 - **🎨 GUI Interface:** Modern, Dark Mode, optimized user experience.
 
+- **📖 AI Training:** You can train Draco, you can use him for educational purposes, programming, but absolutely no commercial use or trading of Draco is allowed.
 <p align="center">
   <img src="assets/demo-features.jpg" alt="Draco Features List" width="48%">
   <img src="assets/demo-coding.jpg" alt="Draco Coding Support" width="48%">
