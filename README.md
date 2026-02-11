@@ -19,7 +19,7 @@ Draco AI is an intelligent virtual assistant that runs completely **Offline** on
 
 - **🧠 Local LLM:** Integrates **Gemma-2b** (Chat) and **Moondream** (Vision) models running directly on the device.
 
-- **⚡ Smart Memory Management:** Automatically decompresses RAM when not in use (Lazy Loading) - Runs smoothly on devices with less than 8GB RAM!
+- **⚡ Smart Memory Management:** Automatically decompresses RAM when not in use (Lazy Loading) - Runs smoothly on devices with less than 4GB RAM!
 
 - **👁️ Computer Vision:** Capable of "seeing" and analyzing the screen or images.
 
