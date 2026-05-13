@@ -22,4 +22,6 @@ env/
 storage/
 *.npz
 
+# Exclude continue folder
 continue/
+**/continue/
