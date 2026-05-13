@@ -1,0 +1,25 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+env/
+
+# Weights & Large files (Dành cho AI)
+*.safetensors
+*.bin
+*.pth
+*.onnx
+
+# VS Code
+.vscode/
+.idea/
+
+# Draco AI
+storage/
+*.npz
+
+continue/
