@@ -32,6 +32,17 @@ FIXES in this revision:
   ✅ FIX-UNUSED-VAR-SEQ             : removed unused local variable `seq` in
      attend().  Q.shape[2] was stored but never referenced in the method body;
      the query mean is computed directly from Q[0] without needing seq.
+  ✅ FIX-COMMIT-BLOCK-TOCTOU        : commit_block() previously read
+     _last_committed_end OUTSIDE the lock before the expensive compression
+     work, then delegated the duplicate-guard to _add_block() which also had
+     no guard.  Two concurrent callers could both pass the early check, both
+     compress the same block, and both append — producing a duplicate Engram
+     entry and advancing the pointer twice.  Fix: _add_block() now re-checks
+     committed_end <= _last_committed_end INSIDE the lock before appending,
+     making the entire check-and-insert atomic.  The early out in
+     commit_block() is kept as a cheap fast path to avoid redundant
+     compression work; the lock-protected check in _add_block() is the
+     authoritative gate.
 """
 from __future__ import annotations
 
@@ -135,9 +146,9 @@ class EngramCache:
         scale = 1.0 / math.sqrt(head_dim)
         self._W_summary = np.eye(head_dim, dtype=np.float32) * scale
 
-        # ✅ FIX-THREAD-SAFETY-COMMITTED-END: _last_committed_end is updated
-        # INSIDE _add_block() while the lock is held, so block visibility and
-        # pointer advancement are always atomic w.r.t. the lock.
+        # _last_committed_end is updated INSIDE _add_block() while the lock
+        # is held, so block visibility and pointer advancement are always
+        # atomic w.r.t. the lock.
         self._last_committed_end: int = 0
         self._n_commits   = 0
         self._n_retrieves = 0
@@ -156,10 +167,15 @@ class EngramCache:
 
         Returns True if committed, False if skipped (duplicate / empty).
 
-        ✅ FIX-THREAD-SAFETY-COMMITTED-END: _last_committed_end is now updated
-        inside _add_block() (while the lock is held), so callers that read
-        _last_committed_end always see a value consistent with the block list.
+        ✅ FIX-COMMIT-BLOCK-TOCTOU: the cheap early-out below avoids wasting
+        CPU on compression for obviously-stale blocks, but is NOT the
+        authoritative duplicate guard — _add_block() re-checks under the lock.
+        Two threads that both pass this check will compete inside _add_block()
+        where only the first writer commits; the second is silently dropped.
         """
+        # Fast-path: cheap non-locked pre-check to skip obvious duplicates and
+        # avoid expensive compression work.  NOT authoritative — race window
+        # exists here; _add_block() holds the definitive lock-protected check.
         if end_pos <= self._last_committed_end:
             return False
         block_len = end_pos - start_pos
@@ -201,10 +217,8 @@ class EngramCache:
             summary           = summary,
             importance        = importance,
         )
-        # ✅ FIX-THREAD-SAFETY-COMMITTED-END: pass end_pos so _add_block can
-        # update _last_committed_end atomically inside the same lock.
-        self._add_block(blk, committed_end=end_pos)
-        return True
+        # _add_block re-checks end_pos under the lock (definitive duplicate guard).
+        return self._add_block(blk, committed_end=end_pos)
 
     # ── Legacy compatibility shim ─────────────────────────────────────────────
 
@@ -229,16 +243,15 @@ class EngramCache:
                 block_start = block_end
                 # Advance pointer atomically inside lock
                 with self._lock:
-                    self._last_committed_end = block_end
+                    self._last_committed_end = max(self._last_committed_end, block_end)
                 continue
 
             blk = self._extract_block_from_cache(
                 kv_cache, block_start, block_end, current_pos)
             if blk is not None:
-                # ✅ FIX-THREAD-SAFETY-COMMITTED-END: pass committed_end so
-                # _add_block updates _last_committed_end inside the lock.
-                self._add_block(blk, committed_end=block_end)
-                n_new += 1
+                committed = self._add_block(blk, committed_end=block_end)
+                if committed:
+                    n_new += 1
             block_start = block_end
 
         return n_new
@@ -300,15 +313,24 @@ class EngramCache:
             importance        = importance,
         )
 
-    def _add_block(self, blk: EngramBlock, committed_end: Optional[int] = None):
+    def _add_block(self, blk: EngramBlock, committed_end: Optional[int] = None) -> bool:
         """
         Thread-safe insertion with lazy matrix invalidation.
 
-        ✅ FIX-THREAD-SAFETY-COMMITTED-END: committed_end, when provided, is
-        written to _last_committed_end inside the lock — atomically with the
-        block append.
+        Returns True if the block was inserted, False if it was a duplicate
+        (detected under the lock — the authoritative duplicate guard).
+
+        ✅ FIX-COMMIT-BLOCK-TOCTOU: committed_end is re-checked against
+        _last_committed_end INSIDE the lock before appending.  This makes the
+        duplicate test atomic with the insert: two threads that both passed the
+        cheap pre-check in commit_block() will compete here; only the first
+        commits, the second is dropped cleanly.
         """
         with self._lock:
+            # ✅ Authoritative duplicate guard (under lock).
+            if committed_end is not None and committed_end <= self._last_committed_end:
+                return False
+
             if self.max_blocks is not None and len(self._blocks) >= self.max_blocks:
                 self._blocks.popleft()
                 self._matrix_dirty  = True
@@ -319,12 +341,14 @@ class EngramCache:
             self._n_commits   += 1
             self._matrix_dirty = True
 
-            # ✅ atomic update of committed pointer
+            # Advance committed pointer atomically with the block append.
             if committed_end is not None:
                 self._last_committed_end = committed_end
 
             if len(self._blocks) % self.n_toc_blocks == 0:
                 self._rebuild_toc_nolock()
+
+        return True
 
     # ── Matrix / ToC rebuild ──────────────────────────────────────────────────
 

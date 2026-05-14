@@ -13,8 +13,6 @@ FIXES (this revision):
   ✅ FIX-DOUBLE-FORWARD-ACCEPT     : after forwarding spec_pending we use the
      returned logits directly; cur is set to [] so the main loop does NOT
      re-forward the same token.
-  ✅ FIX-DOUBLE-FORWARD-TREE       : after try_tree() replays the winning chain,
-     cur is set to [] so the main loop does NOT re-forward the last tree token.
   ✅ FIX-N_POS-SPEC-ACCEPT         : pos[spec_pending] recorded before sampling nid.
   ✅ FIX-L2-UPDATE-AFTER-TREE      : l2 updated to tree's final_l2.
   ✅ FIX-WAL-SPEC-ORDERING         : WAL written only after acceptance.
@@ -59,6 +57,13 @@ FIXES (this revision):
      ContinuousBatchingScheduler — none of these are referenced in the module
      body; they are all re-exported from their respective sub-packages and do
      not need to be imported here.
+  ✅ FIX-SPEC-ACCEPT-DOUBLE-FORWARD: the second forward([spec_pending]) in the
+     accept branch was redundant and HARMFUL — the first forward (via
+     cur=[spec_id] at top of loop) already wrote the KV correctly and produced
+     valid last_logits / l2.  The second forward incremented cache_pos a second
+     time, placing the next token's KV one slot ahead of where the sequence
+     actually was, causing phantom attention positions.  Removed; accept branch
+     now uses the last_logits and l2 already computed by the verification forward.
 """
 from __future__ import annotations
 
@@ -376,6 +381,9 @@ class DracoTransformerV1:
           to cache.get_pos(), so no boundary is missed regardless of when
           it is called relative to n_pos.
         • Engram snapshots parallel KV snapshots for speculative rollback.
+        • Speculative accept: the verification forward (via cur=[spec_id] at
+          top of loop) IS the one and only forward for spec_id.  No second
+          forward in the accept branch — that would advance cache_pos twice.
         ─────────────────────────────────────────────────────────────
         """
         if new_prompt or self._cache is None:
@@ -686,26 +694,21 @@ class DracoTransformerV1:
 
                 if verify_id == spec_pending:
                     # ════════ ACCEPTED ════════════════════════════════
+                    # ✅ FIX-SPEC-ACCEPT-DOUBLE-FORWARD:
+                    # The verification forward (cur=[spec_id] at top of loop)
+                    # already wrote spec_id's KV and produced valid last_logits/l2.
+                    # Do NOT call forward([spec_pending]) again here — that would
+                    # advance cache_pos a second time, putting the next token's KV
+                    # one slot ahead of the actual sequence position.
+                    # last_logits and l2 are already fresh from the verification forward.
                     _wal_append(spec_pending)
                     if profiler:
                         profiler.record_spec_accept()
                     self._spec_tracker.record_accept()
 
-                    _fwd_t1 = time.perf_counter()
-                    l1_acc, l2_acc, _ = self.forward(
-                        [spec_pending], cache,
-                        intent_boost=intent_boost,
-                        add_noise=add_noise,
-                        intent_bias=intent_bias,
-                    )
-                    if profiler:
-                        profiler.record_forward(time.perf_counter() - _fwd_t1)
-
-                    last_logits = np.clip(
-                        l1_acc[0, -1].astype(np.float64), -LOGIT_CLIP, LOGIT_CLIP)
-                    last_logits = _apply_rep_penalty(last_logits)
-                    l2          = l2_acc
-
+                    # Record confirmed position for spec_pending.
+                    # n_pos was already incremented when spec was proposed,
+                    # so the confirmed position is n_pos - 1.
                     pos[spec_pending] = n_pos - 1
                     engram_snap = None
 

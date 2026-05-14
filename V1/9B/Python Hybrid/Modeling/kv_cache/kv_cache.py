@@ -26,6 +26,13 @@ FIXES (this revision):
   ✅ FIX-UNUSED-VAR-ESCALATED     : removed the `escalated` local variable in
      update(); it was set but never read — the break statement and post-loop
      _cache_pos advance handle the two paths without needing the flag.
+  ✅ FIX-WINDOW-SINK-VALIDATION   : __init__ now raises ValueError when
+     window <= sink.  Previously the ring buffer had zero capacity
+     (ring_len = 0), causing ZeroDivisionError in get() the first time
+     pos exceeded window — a silent crash with no useful message.
+  ✅ FIX-GET-RINGLEN-ZERO         : get() now guards ring_len > 0 explicitly
+     as a second line of defence; returns only sink tokens when ring is empty
+     rather than crashing with a modulo-zero error.
 """
 from __future__ import annotations
 import os
@@ -51,6 +58,16 @@ class KVCache:
         memmap_dir: Optional[str] = None,
         max_batch:  int      = 1,
     ):
+        # ✅ FIX-WINDOW-SINK-VALIDATION: ring capacity must be at least 1.
+        # window == sink → ring_len = 0 → ZeroDivisionError in get() when
+        # pos > window.  Catch this early with a clear message.
+        if window <= sink:
+            raise ValueError(
+                f"KVCache: window ({window}) must be greater than sink ({sink}). "
+                f"The ring buffer needs at least 1 slot beyond the sink region. "
+                f"Either increase window or decrease sink."
+            )
+
         self.n_layers   = n_layers
         self.n_kv_heads = n_kv_heads
         self.head_dim   = head_dim
@@ -146,9 +163,6 @@ class KVCache:
                     # ✅ FIX-DELTA-ESCALATION-PARTIAL: escalate to full,
                     #    then write remaining tokens (t+1 .. seq-1) via the
                     #    fast path so the buffer ends up complete.
-                    #    ✅ FIX-UNUSED-VAR-ESCALATED: no longer track a local
-                    #    `escalated` flag — the break + post-loop position
-                    #    advance is sufficient.
                     self._snap_escalate_to_full(snap)
                     remaining = seq - (t + 1)
                     if remaining > 0:
@@ -191,7 +205,13 @@ class KVCache:
 
     # ── Read ───────────────────────────────────────────────────────────
     def get(self, layer_idx: int, batch_idx: int = 0) -> Tuple[np.ndarray, np.ndarray]:
-        """Return (K, V) as float32 arrays with correct temporal ordering."""
+        """Return (K, V) as float32 arrays with correct temporal ordering.
+
+        ✅ FIX-GET-RINGLEN-ZERO: guard ring_len > 0 before modulo.  With a
+        valid __init__ (window > sink) this should never trigger, but acts as
+        a second line of defence for objects de-serialised from old checkpoints
+        that predate the validation check.
+        """
         pos    = int(self._cache_pos[batch_idx])
         length = min(pos, self.window)
 
@@ -199,13 +219,22 @@ class KVCache:
             K = self._K[layer_idx, batch_idx, :, :length, :][None]
             V = self._V[layer_idx, batch_idx, :, :length, :][None]
         else:
-            sink       = self.sink
-            ring_len   = self.window - sink
-            ring_start = (pos - sink) % ring_len
-            ring_order = [(sink + (ring_start + i) % ring_len) for i in range(ring_len)]
-            idx = list(range(sink)) + ring_order
-            K = self._K[layer_idx, batch_idx, :, idx, :][None]
-            V = self._V[layer_idx, batch_idx, :, idx, :][None]
+            sink     = self.sink
+            ring_len = self.window - sink
+
+            # ✅ FIX-GET-RINGLEN-ZERO: if somehow ring_len is 0, fall back to
+            # returning only the sink region rather than crashing.
+            if ring_len <= 0:
+                K = self._K[layer_idx, batch_idx, :, :sink, :][None]
+                V = self._V[layer_idx, batch_idx, :, :sink, :][None]
+            else:
+                ring_start = (pos - sink) % ring_len
+                ring_order = [
+                    (sink + (ring_start + i) % ring_len) for i in range(ring_len)
+                ]
+                idx = list(range(sink)) + ring_order
+                K = self._K[layer_idx, batch_idx, :, idx, :][None]
+                V = self._V[layer_idx, batch_idx, :, idx, :][None]
 
         return K.astype(np.float32), V.astype(np.float32)
 

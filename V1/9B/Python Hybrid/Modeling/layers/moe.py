@@ -19,6 +19,14 @@ FIXES (this revision):
        QuantizedLinear, np.stack() would produce an object-dtype array and the
        subsequent einsum would raise a TypeError at runtime after quantization.
     ✅ FIX-UNUSED-IMPORT-MM    : removed unused `mm` import from ops.tensor_ops.
+    ✅ FIX-LB-EARLY-RETURN-NO-RESET : adapt_router_bias() previously returned
+       immediately when _lb_steps == 0 WITHOUT resetting _expert_counts.
+       This violated the documented FIX-LB-RESET-GUARD invariant: if
+       reset_counts=True is passed and _lb_steps happens to be 0 (e.g. after
+       a manual external reset of only _lb_steps), _expert_counts would keep
+       stale values indefinitely.  Now the reset is performed BEFORE the early
+       return so the invariant "reset_counts=True always clears counts" holds
+       unconditionally regardless of _lb_steps.
 """
 from __future__ import annotations
 import logging
@@ -84,11 +92,27 @@ class MoELayer:
                           correction_scale: float = 0.1, reset_counts: bool = True):
         """Adjust router bias to reduce expert load imbalance.
 
-        FIX-LB-RESET-GUARD: always reset counts/steps if reset_counts is True,
-        regardless of whether we have enough data to compute an adjustment.
-        This prevents unbounded accumulation of zero-step drift.
+        ✅ FIX-LB-RESET-GUARD + FIX-LB-EARLY-RETURN-NO-RESET:
+        When _lb_steps == 0 (no forward passes since last reset), there is
+        nothing to adjust — but if reset_counts=True, _expert_counts must
+        still be cleared to satisfy the invariant "reset_counts=True always
+        clears stale counts regardless of _lb_steps".
+
+        Previously the early-return fired BEFORE the reset block at the end
+        of the function, silently leaving stale count data in _expert_counts
+        when _lb_steps happened to be 0.
+
+        Fix: the _lb_steps == 0 early-return now performs the reset inline
+        before returning, so the invariant holds unconditionally.  For the
+        normal path (_lb_steps > 0), the adjustment runs first and the reset
+        follows — preserving the intended adjust-then-reset semantics.
         """
+        # ✅ FIX-LB-EARLY-RETURN-NO-RESET: nothing to adjust when _lb_steps==0,
+        # but still honour the reset contract before returning early.
         if self._lb_steps == 0:
+            if reset_counts:
+                self._expert_counts[:] = 0
+                # _lb_steps is already 0, nothing more to do
             return
 
         total = self._expert_counts.sum()
@@ -100,7 +124,7 @@ class MoELayer:
             mask = np.abs(deviation) > ideal * imbalance_thresh
             self.router_bias[mask] += adj[mask].astype(np.float32)
 
-        # Always reset regardless of total — prevents stale count accumulation
+        # Always reset regardless of total — prevents stale count accumulation.
         if reset_counts:
             self._expert_counts[:] = 0
             self._lb_steps         = 0
