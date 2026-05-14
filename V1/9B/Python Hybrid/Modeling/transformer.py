@@ -48,18 +48,17 @@ FIXES (this revision):
      branch after normal decode forward; previously only on speculative/tree events.
   ✅ FIX-ENGRAM-WINDOW-CHECK       : set_engram_cache() emits RuntimeWarning
      when window < block_size to prevent silent permanent token loss.
-  ✅ FIX-PREFIX-ENGRAM-SNAPSHOT   : generate() stores engram.snapshot() in
+  ✅ FIX-PREFIX-ENGRAM-SNAPSHOT    : generate() stores engram.snapshot() in
      prefix_cache.put() and restores it on full-hit get().  All three full-hit
      sub-cases are handled: (a) logits+engram_snap, (b) no-logits+engram_snap,
      (c) legacy entry with no engram_snap.
   ✅ FIX-FULL-HIT-NO-LOGITS-PREFILL: Full-hit path that re-forwards last token
      now uses _in_prefill=False so freq/pos/n_pos are NOT double-counted.
-  ✅ FIX-DECODE-COMMIT             : _try_commit_block() now called in the else
-     branch of the forward block (normal decode path) immediately after
-     forward([nid]) writes its KV into the cache. Previously only called on
-     speculative/tree events — completed blocks were silently deferred.
-  ✅ FIX-ENGRAM-WINDOW-CHECK       : set_engram_cache() emits RuntimeWarning
-     when window < block_size to prevent silent permanent token loss.
+  ✅ FIX-UNUSED-IMPORTS            : removed unused imports MOE_NOISE_SCALE,
+     GQAttention, ExpertFFN, MoELayer, mm, RequestHandle,
+     ContinuousBatchingScheduler — none of these are referenced in the module
+     body; they are all re-exported from their respective sub-packages and do
+     not need to be imported here.
 """
 from __future__ import annotations
 
@@ -76,16 +75,13 @@ import numpy as np
 
 from .constants import (
     SINK_TOKENS, SPEC_THRESH, DEFAULT_TEMP, DEFAULT_TOP_P,
-    MOE_NOISE_SCALE, LOGIT_CLIP,
+    LOGIT_CLIP,
 )
 from .config import ModelConfig
 
-# Layers
+# Layers — only TransformerBlock is instantiated directly in this module
 from .layers.block      import TransformerBlock
-from .layers.attention  import GQAttention
-from .layers.mlp        import ExpertFFN
-from .layers.moe        import MoELayer
-from .ops.tensor_ops    import rms_norm, mm
+from .ops.tensor_ops    import rms_norm
 
 # Cache
 from .kv_cache.kv_cache     import KVCache
@@ -107,7 +103,6 @@ from .runtime.precision   import DynamicPrecisionManager
 from .runtime.wal         import WriteAheadLog
 from .runtime.profiler    import InferenceProfiler
 from .runtime.speculative import MTPHead, SpeculativeDecoder, SpeculativeTreeDecoder
-from .runtime.scheduler   import RequestHandle, ContinuousBatchingScheduler
 
 __all__ = ["TransformerBlock", "DracoTransformerV1", "TransformerBridge"]
 
@@ -471,16 +466,11 @@ class DracoTransformerV1:
         if _prefix_hit:
             if _plen_hit == len(prompt_ids) and _cached_last_logits is not None:
                 # ── Full hit + cached logits ─────────────────────────────
-                # KV already restored from cache; skip all forward calls.
                 for _idx, _tid in enumerate(prompt_ids):
                     freq[_tid] = freq.get(_tid, 0) + 1
                     pos[_tid]  = _idx
                 n_pos = len(prompt_ids)
                 cur   = []
-                # ✅ FIX-PREFIX-ENGRAM-SNAPSHOT: restore Engram to the state
-                # saved when this prefix was first committed.  Without this,
-                # prompt tokens are absent from Engram because no forward()
-                # fires and _try_commit_block() never runs.
                 if (self._engram_cache is not None
                         and _prefix_engram_snap is not None):
                     self._engram_cache.restore(_prefix_engram_snap)
@@ -488,31 +478,15 @@ class DracoTransformerV1:
                         logger.debug(
                             "[PrefixCache] Engram restored from prefix snapshot "
                             "(blocks=%d)", _prefix_engram_snap.get("_n_blocks", 0))
-                elif self._engram_cache is not None:
-                    # Legacy entry (stored before Engram support): no Engram
-                    # snapshot available.  Engram stays empty for this session;
-                    # the next generate() without a cache hit will rebuild it.
-                    pass
 
             elif _plen_hit == len(prompt_ids):
                 # ── Full hit but no cached logits ────────────────────────
-                # Must re-forward the last prompt token to produce logits.
-                # freq/pos/n_pos are already set for all prompt tokens above.
                 for _idx, _tid in enumerate(prompt_ids):
                     freq[_tid] = freq.get(_tid, 0) + 1
                     pos[_tid]  = _idx
                 n_pos = len(prompt_ids)
                 cur   = [prompt_ids[-1]]
-                # ✅ FIX-FULL-HIT-NO-LOGITS-PREFILL: _in_prefill must be False
-                # here.  The prompt was already restored via cache.restore();
-                # setting _in_prefill=True would cause the prefill branch to
-                # re-run freq/pos/n_pos for the last token — doubling its freq
-                # count and advancing n_pos to len(prompt_ids)+1.
-                # With _in_prefill=False the loop treats it as a decode forward:
-                # last_logits is captured and _try_commit_block() is called,
-                # while freq/pos/n_pos remain correct.
                 _in_prefill = False
-                # Restore Engram snapshot if available (same as full-hit path).
                 if (self._engram_cache is not None
                         and _prefix_engram_snap is not None):
                     self._engram_cache.restore(_prefix_engram_snap)
@@ -524,7 +498,6 @@ class DracoTransformerV1:
 
             else:
                 # ── Partial hit ──────────────────────────────────────────
-                # Suffix tokens [_plen_hit:] need a forward pass.
                 cur = ids[_plen_hit:] if len(ids) > _plen_hit else [ids[-1]]
                 for _idx, _tid in enumerate(prompt_ids[:_plen_hit]):
                     freq[_tid] = freq.get(_tid, 0) + 1
@@ -541,48 +514,33 @@ class DracoTransformerV1:
 
         def _try_commit_block():
             """
-            ✅ FIX-ENGRAM-COMMIT-TIMING
-
             Scans ALL block boundaries from _last_committed_end up to
             cache.get_pos() and commits each completed block into the Engram.
-
-            Uses cache.get_pos() as the authoritative KV write position —
-            NOT n_pos (which may be 1 ahead of cache writes in the normal
-            decode path).  This eliminates the off-by-one where n_pos is
-            incremented for a sampled token before forward() writes that
-            token's KV into the cache.
-
-            Safe to call at any point: it only commits blocks where the KV
-            data is fully written and still within the sliding window.
+            Uses cache.get_pos() as the authoritative KV write position.
             """
             if self._engram_cache is None:
                 return
             bs          = self._engram_cache.block_size
-            current_pos = cache.get_pos()   # authoritative: tokens written so far
+            current_pos = cache.get_pos()
             last_end    = self._engram_cache._last_committed_end
 
-            # Scan every block boundary that sits within the written range
-            # and has not yet been committed.
             boundary = (last_end // bs + 1) * bs
             while boundary <= current_pos:
                 block_start = boundary - bs
                 block_end   = boundary
 
-                # Guard: block must still be accessible (within sliding window)
                 oldest_accessible = max(0, current_pos - cache.window)
                 if block_start < oldest_accessible:
-                    # Block already evicted; advance pointer without compressing
                     self._engram_cache._last_committed_end = block_end
                     boundary += bs
                     continue
 
-                # Extract K/V slices from the time-ordered tensor
                 layer_keys_list   = []
                 layer_values_list = []
                 valid = True
 
                 for li in range(self.n_layers):
-                    K_full, V_full = cache.get(li)  # (1, n_kv_heads, total_len, head_dim)
+                    K_full, V_full = cache.get(li)
                     total_len  = K_full.shape[2]
                     oldest_pos = current_pos - total_len
 
@@ -597,9 +555,9 @@ class DracoTransformerV1:
                     layer_values_list.append(V_full[0, :, offset:end_offset, :])
 
                 if not valid:
-                    break   # Cannot extract; stop here (data not yet in cache)
+                    break
 
-                layer_keys   = np.stack(layer_keys_list,   axis=0)  # (n_layers, n_kv_heads, bs, head_dim)
+                layer_keys   = np.stack(layer_keys_list,   axis=0)
                 layer_values = np.stack(layer_values_list, axis=0)
 
                 self._engram_cache.commit_block(block_start, block_end,
@@ -659,7 +617,6 @@ class DracoTransformerV1:
             if stop_event is not None and stop_event.is_set():
                 break
 
-            # Mid-session speculative re-enable check
             if (
                 _user_wants_speculative
                 and not use_speculative
@@ -681,7 +638,6 @@ class DracoTransformerV1:
                 if profiler:
                     profiler.record_forward(time.perf_counter() - _fwd_t0)
             elif not cur:
-                # cur=[] means KV already written, last_logits is fresh.
                 pass
             else:
                 l1, l2, _ = self.forward(
@@ -696,25 +652,16 @@ class DracoTransformerV1:
                 if _prompt_last_logits is None:
                     _prompt_last_logits = last_logits.copy()
 
-                # ✅ FIX-ENGRAM-PREFILL-TRACKING
-                # Track freq/pos/n_pos for all forwarded tokens and commit
-                # engram blocks.  _in_prefill is True for the initial prompt
-                # batch regardless of prefix-cache path taken.
                 if _in_prefill:
                     for _idx, _tid in enumerate(cur):
                         freq[_tid] = freq.get(_tid, 0) + 1
                         pos[_tid]  = n_pos + _idx
                     n_pos += len(cur)
-                    # Commit all complete blocks now in cache
                     _try_commit_block()
-                    cur = []           # Prefill done; next iter enters decode
+                    cur = []
                     _in_prefill = False
-                    continue           # Re-enter loop to sample first new token
+                    continue
                 else:
-                    # ✅ FIX-DECODE-COMMIT: Normal decode token has just been
-                    # forwarded and its KV is now in cache. Call commit so
-                    # completed blocks are absorbed into Engram immediately —
-                    # not deferred until a speculative/tree event.
                     _try_commit_block()
 
             assert last_logits is not None, "last_logits is None — logic error"
@@ -764,10 +711,8 @@ class DracoTransformerV1:
 
                     spec_pending = spec_snap = pre_spec_logits = None
 
-                    # Commit engram after spec_pending KV is written
                     _try_commit_block()
 
-                    # Sample T+2
                     nid, conf = _sample(last_logits)
                     ids.append(nid)
                     freq[nid] = freq.get(nid, 0) + 1
@@ -780,7 +725,6 @@ class DracoTransformerV1:
                     if nid in _eos_set or n_generated >= max_new_tokens:
                         break
 
-                    # Forward T+2
                     _fwd_t2 = time.perf_counter()
                     l1_new, l2_new, _ = self.forward(
                         [nid], cache,
@@ -798,10 +742,8 @@ class DracoTransformerV1:
                     if debug:
                         self._sanity_checks(last_logits_new, f"accept_fwd step={n_generated}")
 
-                    # Commit engram after T+2 KV is written
                     _try_commit_block()
 
-                    # Try speculative T+3
                     if use_speculative and l2_new is not None:
                         spec_id, spec_conf = self.mtp.try_speculative(l2_new)
                         if spec_id is not None and spec_id not in _eos_set:
@@ -833,14 +775,11 @@ class DracoTransformerV1:
                         if profiler and spec_snap.get("_escalated"):
                             profiler.record_escalate()
                         cache.restore(spec_snap)
-                    # Restore Engram to pre-spec state
                     _engram_restore(engram_snap)
                     engram_snap = None
 
                     if pre_spec_logits is not None:
-                        # ✅ FIX-MU-CONTAMINATION-REJECT
                         mu = mu_pre_verify
-                        # ✅ FIX-NPOS-OFFBYONE-REJECT
                         _ref_pos = n_pos - 1
                         last_logits = pre_spec_logits.copy()
                         for tid, cnt in freq.items():
@@ -864,8 +803,6 @@ class DracoTransformerV1:
                     _wal_append(verify_id)
 
                     if verify_id in _eos_set:
-                        # ✅ FIX-ENGRAM-SPEC-REJECT-EOS: write KV for verify_id
-                        # then commit engram so the EOS block boundary is not lost.
                         self.forward(
                             [verify_id], cache,
                             intent_boost=intent_boost,
@@ -891,7 +828,6 @@ class DracoTransformerV1:
                 stream_cb(nid, conf)
             _wal_append(nid)
 
-            # Optional generation checkpoint
             if checkpoint_every > 0 and n_generated % checkpoint_every == 0:
                 _ckpt = checkpoint_path or "dracoai_gen_checkpoint"
                 try:
@@ -934,8 +870,6 @@ class DracoTransformerV1:
                             _eos_hit = True
                             break
 
-                    # Tree tokens are replayed via model.forward() inside
-                    # try_tree(), so cache.get_pos() == n_pos after the loop.
                     _try_commit_block()
 
                     if _eos_hit or n_generated >= max_new_tokens:
@@ -961,10 +895,6 @@ class DracoTransformerV1:
                         break
                     spec_pending = spec_id
 
-            # Queue nid for forwarding next iteration so its KV is written
-            # into the cache.  _try_commit_block() will be called inside the
-            # else branch of the forward block at the top of the next loop,
-            # immediately after forward([nid]) completes.
             cur = [ids[-1]]
 
         # ── Cleanup: remove unverified speculative token ──────────────
@@ -991,9 +921,6 @@ class DracoTransformerV1:
             try:
                 _snap_store = cache.snapshot(delta_threshold=0)
                 cache._snap_escalate_to_full(_snap_store)
-                # ✅ FIX-PREFIX-ENGRAM-SNAPSHOT: capture Engram state so that
-                # future full-hit restores include prompt blocks.  Pass None
-                # when Engram is not active — prefix_cache.put() handles it.
                 _engram_snap_store = (
                     self._engram_cache.snapshot()
                     if self._engram_cache is not None else None

@@ -11,12 +11,19 @@ Rules:
   - "Thinking" (sampling, penalty, routing) always runs on CPU.
   - "Inference" (forward pass) runs on the optimal_backend.
   - This module has NO knowledge of model weights, layers, or cache.
+
+FIXES (this revision):
+  ✅ FIX-UNUSED-IMPORTS-KERNEL : removed unused imports KERNEL_TRITON and
+     KERNEL_NUMBA.  The docstring mentions them as valid values for
+     inference_backend, but the module code only uses KERNEL_NUMPY as a
+     default constant.  KERNEL_TRITON / KERNEL_NUMBA are string literals
+     that callers pass in; this module never imports them at runtime.
 """
 from __future__ import annotations
 import logging
 from typing import Callable, Any
 
-from ..constants import KERNEL_NUMPY, KERNEL_TRITON, KERNEL_NUMBA
+from ..constants import KERNEL_NUMPY
 
 __all__ = ["ExecutionEnvironment", "get_environment"]
 
@@ -29,7 +36,8 @@ class ExecutionEnvironment:
 
     Attributes
     ----------
-    inference_backend : KERNEL_NUMPY | KERNEL_TRITON | KERNEL_NUMBA
+    inference_backend : one of KERNEL_NUMPY | KERNEL_TRITON | KERNEL_NUMBA
+                        (string constants from constants.py)
     thinking_backend  : always KERNEL_NUMPY (CPU)
     """
 

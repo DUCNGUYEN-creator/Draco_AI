@@ -12,11 +12,15 @@ State held:
   - pos          : last seen position of each token (dict)
   - n_pos        : total token positions processed (int)
   - generated    : list of generated token IDs so far
+
+FIXES (this revision):
+  ✅ FIX-UNUSED-IMPORT-NUMPY : removed unused `import numpy as np`.
+     GenerationSession is a pure-Python value object; no NumPy arrays
+     are stored or manipulated here.
 """
 from __future__ import annotations
 import json
 from typing import Dict, List, Optional
-import numpy as np
 
 __all__ = ["GenerationSession"]
 

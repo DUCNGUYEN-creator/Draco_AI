@@ -1,11 +1,18 @@
 # DracoAI V1 — modeling/testing/test_quant.py
 # Copyright (C) 2026  Draco Studio and DUCNGUYEN-creator — GPL v3
-"""Unit tests for INT8 / INT4 quantization."""
+"""Unit tests for INT8 / INT4 quantization.
+
+FIXES (this revision):
+  ✅ FIX-UNUSED-IMPORT-DEQUANTIZE-INT4 : removed unused `dequantize_int4`
+     import.  The function is tested indirectly via QuantizedLinear (INT4
+     path), but no test in this file calls dequantize_int4 directly.
+     dequantize_int8 IS used in test_dequant_roundtrip_int8 and is kept.
+"""
 import numpy as np
 import pytest
 from ..quant.int4   import QuantizedLinear
 from ..quant.scales import (compute_int8_scale, compute_int4_scale_zero,
-                            dequantize_int8, dequantize_int4)
+                            dequantize_int8)
 
 
 class TestQuantizedLinearINT8:

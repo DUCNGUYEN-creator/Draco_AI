@@ -1,8 +1,14 @@
 # DracoAI V1 — modeling/testing/test_sampling.py
 # Copyright (C) 2026  Draco Studio and DUCNGUYEN-creator — GPL v3
-"""Unit tests for sampling algorithms and penalties."""
+"""Unit tests for sampling algorithms and penalties.
+
+FIXES (this revision):
+  ✅ FIX-UNUSED-IMPORT-PYTEST : removed unused `import pytest`.  No test in
+     this file uses pytest.raises, pytest.mark, or any other pytest API
+     directly — the test classes are discovered automatically by pytest
+     without needing the import.
+"""
 import numpy as np
-import pytest
 from ..sampling.sampler   import Sampler
 from ..sampling.mirostat  import mirostat_v2
 from ..sampling.penalties import (apply_repetition_penalty,

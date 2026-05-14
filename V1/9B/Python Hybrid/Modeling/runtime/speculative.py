@@ -19,19 +19,16 @@ FIXES (this revision):
   ✅ FIX-TREE-EOS-RESTORE-BUG  : removed cache.restore(branch_snap) on EOS
      accept.  Restoring after EOS accept wiped the EOS token's KV from the
      cache, creating a KV/sequence desync on any subsequent continued
-     generation.  Since the EOS KV was just written and generation ends, the
-     correct action is to keep the cache as-is and return immediately.
+     generation.
   ✅ FIX-TREE-BUDGET-REPLAY    : try_tree now accepts a max_tokens budget; the
      winning chain is truncated to that budget BEFORE replay so the KV cache
      never ends up with more entries than the generate loop will commit to ids.
-     Without this, a tree that returns N accepted tokens but the outer loop
-     only appends M < N tokens due to budget / EOS would leave N−M phantom KV
-     entries, silently corrupting all future attention positions.
   ✅ FIX-TREE-LOGITS-STALE-AFTER-TRUNCATION : when the winning chain is
-     truncated to max_tokens, best_logits must be updated to the logits from
-     the LAST actually-replayed token (not the pre-truncation end of chain).
-     Previously best_logits was stale (from beyond the truncation point),
-     causing the caller to sample the next token from wrong logits.
+     truncated to max_tokens, best_logits is updated to the logits from the
+     LAST actually-replayed token (not the pre-truncation end of chain).
+  ✅ FIX-UNUSED-VAR-WAS-TRUNCATED : removed the local variable `was_truncated`
+     that was assigned but never read.  The truncation condition only affects
+     `best_accepted`; no downstream code branches on this flag.
 """
 from __future__ import annotations
 import math
@@ -151,9 +148,8 @@ class SpeculativeTreeDecoder:
     • EOS accept does NOT restore branch_snap — KV of EOS is kept in cache.
     • Winning chain is truncated to max_tokens budget BEFORE replay so the
       KV cache entry count always matches what the generate loop commits.
-    • ✅ FIX-TREE-LOGITS-STALE-AFTER-TRUNCATION: best_logits is updated
-      during replay to reflect the logits of the last actually-replayed token,
-      NOT the pre-truncation end-of-chain logits.
+    • best_logits is updated during replay to reflect the logits of the last
+      actually-replayed token (FIX-TREE-LOGITS-STALE-AFTER-TRUNCATION).
     ─────────────────────────────────────────────────────────────────────
     """
 
@@ -192,8 +188,8 @@ class SpeculativeTreeDecoder:
         accepted_ids is truncated to max_tokens (if > 0) BEFORE replay so
         the KV cache is never ahead of what the generate loop actually commits
         to ids.  final_l2 reflects the post-replay (truncated) cache state.
-        final_logits is from the LAST replayed token (not the pre-truncation
-        end-of-chain token) — this is the ✅ FIX-TREE-LOGITS-STALE-AFTER-TRUNCATION.
+        final_logits is from the LAST replayed token — guarantees freshness
+        whether or not truncation occurred (FIX-TREE-LOGITS-STALE-AFTER-TRUNCATION).
         If nothing is accepted, cache state is restored to root_snap.
         """
         model = self.model
@@ -252,12 +248,12 @@ class SpeculativeTreeDecoder:
                 if verify_id == spec_id:
                     if spec_id in _eos_set:
                         # ✅ FIX-TREE-EOS-RESTORE-BUG: do NOT restore the
-                        #    branch snapshot here.  model.forward() already
-                        #    wrote the EOS token's KV into the cache.
-                        #    Restoring would erase that entry and leave the
-                        #    cache one position behind the sequence, corrupting
-                        #    any continued generation.  We keep the cache as-is
-                        #    and return — generation ends immediately after.
+                        # branch snapshot here.  model.forward() already
+                        # wrote the EOS token's KV into the cache.
+                        # Restoring would erase that entry and leave the
+                        # cache one position behind the sequence, corrupting
+                        # any continued generation.  We keep the cache as-is
+                        # and return — generation ends immediately after.
                         return [spec_id], branch_logits, l2_c, verify_mu
 
                     deeper, d_logits, d_l2, d_mu = _search(
@@ -273,22 +269,23 @@ class SpeculativeTreeDecoder:
                 cache.restore(branch_snap)
 
             # ✅ FIX-TREE-BUDGET-REPLAY: truncate the winning chain to the
-            #    caller's remaining token budget BEFORE replaying into cache.
-            #    Without this, cache ends up with more KV entries than ids,
-            #    causing phantom attention positions on the next forward pass.
-            was_truncated = False
+            # caller's remaining token budget BEFORE replaying into cache.
+            # Without this, cache ends up with more KV entries than ids,
+            # causing phantom attention positions on the next forward pass.
+            # ✅ FIX-UNUSED-VAR-WAS-TRUNCATED: the boolean flag is not needed
+            # — truncation only affects best_accepted in-place; downstream
+            # replay always uses best_logits from the last replayed token.
             if max_tokens > 0 and len(best_accepted) > max_tokens:
                 best_accepted = best_accepted[:max_tokens]
-                was_truncated = True
 
             # Replay the (possibly truncated) winning chain on the restored
             # cache so KV exactly matches the committed token sequence.
             # ✅ FIX-TREE-LOGITS-STALE-AFTER-TRUNCATION: capture l1 from the
-            #    replay loop so best_logits reflects the LAST replayed token.
-            #    When truncation occurred, the pre-truncation best_logits was
-            #    from beyond the cut-off point; the caller must receive logits
-            #    from the actual last committed token for correct next-step
-            #    sampling.
+            # replay loop so best_logits reflects the LAST replayed token.
+            # When truncation occurred, the pre-truncation best_logits was
+            # from beyond the cut-off point; the caller must receive logits
+            # from the actual last committed token for correct next-step
+            # sampling.
             if best_accepted:
                 replay_l2     = best_l2
                 replay_logits = best_logits

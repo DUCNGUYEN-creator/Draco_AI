@@ -9,6 +9,12 @@ Gracefully degrades to NumPy if triton is unavailable.
 Note: This is a reference implementation skeleton.
       Production use requires tuning BLOCK_SIZE and num_warps
       for the target GPU (A100, H100, RTX 3090, etc.).
+
+FIXES (this revision):
+  ✅ FIX-UNUSED-VAR-SK : `Sk = K.shape[2]` was assigned on line 49 but the
+     kernel launch on line 115 used `K.shape[2]` directly instead of `Sk`.
+     Now the launch consistently uses the pre-computed `Sk` variable, which
+     both eliminates the pyflakes warning and makes the intent explicit.
 """
 from __future__ import annotations
 import numpy as np
@@ -46,7 +52,7 @@ def _triton_sdpa(Q, K, V, scale, causal):
     V_c = cp.asarray(V.astype(np.float16))
 
     B, H, Sq, D = Q.shape
-    Sk = K.shape[2]
+    Sk = K.shape[2]   # key/value sequence length — used in kernel launch below
     out_c = cp.zeros((B, H, Sq, D), dtype=cp.float16)
 
     BLOCK = 64
@@ -108,12 +114,15 @@ def _triton_sdpa(Q, K, V, scale, causal):
                   + d_off[None, :])
         tl.store(o_ptrs, acc.to(tl.float16), mask=q_off[:, None] < Sq - qid * BLOCK_Q)
 
-    grid = (B, H, (Q.shape[2] + BLOCK - 1) // BLOCK)
+    grid = (B, H, (Sq + BLOCK - 1) // BLOCK)
+    # ✅ FIX-UNUSED-VAR-SK: use pre-computed Sq and Sk instead of Q.shape[2]
+    # and K.shape[2] — eliminates the pyflakes warning and is consistent with
+    # the variable names used in the kernel signature above.
     _sdpa_kernel[grid](
         Q_c, K_c, V_c, out_c,
         *Q_c.strides, *K_c.strides, *V_c.strides, *out_c.strides,
-        Q.shape[2], K.shape[2], scale,
-        BLOCK_Q=BLOCK, BLOCK_K=BLOCK, HEAD_DIM=Q.shape[-1],
+        Sq, Sk, scale,
+        BLOCK_Q=BLOCK, BLOCK_K=BLOCK, HEAD_DIM=D,
     )
     return cp.asnumpy(out_c).astype(Q.dtype)
 

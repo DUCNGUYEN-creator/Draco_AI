@@ -3,17 +3,26 @@
 """
 Integration tests for DracoTransformerV1 end-to-end inference.
 Uses a tiny config to keep tests fast (< 2 s on CPU).
+
+FIXES (this revision):
+  ✅ FIX-UNUSED-IMPORT-KVCACHE      : removed unused `KVCache` import.
+     The tests use model._make_cache() to obtain cache objects; they never
+     construct a KVCache directly.
+  ✅ FIX-UNUSED-IMPORT-HEALTHMONITOR: removed unused `HealthMonitor` import.
+     No test in this file instantiates or exercises HealthMonitor directly.
+  ✅ FIX-UNUSED-VAR-OUT1            : in test_prefix_cache_hit, the first
+     generate() call's result was stored in `out1` but only `out2` was ever
+     asserted.  Changed to `_` to signal the return value is intentionally
+     discarded (the test only cares that the second call succeeds).
 """
 import threading
 import numpy as np
 import pytest
 from ..config      import ModelConfig
 from ..transformer import DracoTransformerV1
-from ..kv_cache.kv_cache    import KVCache
 from ..kv_cache.prefix_cache import PrefixCache
 from ..runtime.wal        import WriteAheadLog
 from ..runtime.profiler   import InferenceProfiler
-from ..runtime.health     import HealthMonitor
 
 
 # Tiny model config: fast on CPU, still exercises all code paths
@@ -117,9 +126,9 @@ class TestPrefixCache:
         pc = PrefixCache(max_entries=8)
         model.set_prefix_cache(pc)
         prompt = [1, 2, 3, 4, 5]
-        # First call: stores prefix
-        out1 = model.generate(prompt, max_new_tokens=3,
-                              use_mirostat=False, use_speculative=False)
+        # First call: populates the prefix cache (result not needed)
+        _ = model.generate(prompt, max_new_tokens=3,
+                           use_mirostat=False, use_speculative=False)
         # Second call: should hit cache
         out2 = model.generate(prompt, max_new_tokens=3,
                               use_mirostat=False, use_speculative=False)

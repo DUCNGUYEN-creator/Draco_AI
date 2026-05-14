@@ -1,7 +1,12 @@
 # DracoAI V1 — modeling/testing/test_attention.py
 # Copyright (C) 2026  Draco Studio and DUCNGUYEN-creator — GPL v3
-"""Unit tests for GQAttention and attention ops."""
-import math
+"""Unit tests for GQAttention and attention ops.
+
+FIXES (this revision):
+  ✅ FIX-UNUSED-IMPORT-MATH : removed unused `import math`.  No test in this
+     file calls any math.* function; the sqrt/pi constants needed by attention
+     are computed internally by the modules under test.
+"""
 import numpy as np
 import pytest
 
