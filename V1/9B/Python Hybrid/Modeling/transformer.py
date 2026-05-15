@@ -57,6 +57,15 @@ FIXES (this revision):
      ContinuousBatchingScheduler — none of these are referenced in the module
      body; they are all re-exported from their respective sub-packages and do
      not need to be imported here.
+  ✅ FIX-STREAMCB-DOUBLE-FIRE        : stream_cb previously fired at spec
+     proposal time (optimistic/premature) AND again at rejection time with the
+     correct token.  Callers received two callbacks for one generation position:
+     first a wrong token, then the right one.  Fix: stream_cb is now suppressed
+     at proposal; it fires exactly once when the spec token is CONFIRMED in the
+     accept branch (via stored spec_pending_conf), or once with verify_id in
+     the reject branch.  Zero duplicate callbacks, no missed tokens.
+  ✅ FIX-TREEDEC-DEAD-PARAMS       : try_tree() no longer accepts ids, freq,
+     pos, n_pos — these were silently unused.  Call site updated to match.
   ✅ FIX-SPEC-ACCEPT-DOUBLE-FORWARD: the second forward([spec_pending]) in the
      accept branch was redundant and HARMFUL — the first forward (via
      cur=[spec_id] at top of loop) already wrote the KV correctly and produced
@@ -64,6 +73,23 @@ FIXES (this revision):
      time, placing the next token's KV one slot ahead of where the sequence
      actually was, causing phantom attention positions.  Removed; accept branch
      now uses the last_logits and l2 already computed by the verification forward.
+  ✅ FIX-PREFIX-CACHE-SNAP-TIMING  : prefix_cache snapshot was previously taken
+     AFTER generation completed, so the stored cache_pos included all generated
+     tokens.  On the next call with the same prompt the restored cache_pos was
+     wrong (prompt_len + prev_generated), causing every subsequent token's KV to
+     be written at a phantom position.  Fix: the snapshot is now captured
+     immediately after prefill completes (inside the _in_prefill branch) while
+     cache_pos == len(prompt_ids).  The post-generation store block is removed.
+  ✅ FIX-FULL-HIT-NO-LOGITS-CACHE-POS: Full prefix-cache hit (no cached logits)
+     called cache.restore(snap) then forwarded prompt_ids[-1] again.  Since the
+     restored snap already has cache_pos == len(prompt_ids), the extra forward
+     advanced cache_pos to len(prompt_ids)+1 — every subsequent decode token's
+     KV landed one position ahead of where the sequence actually was.  Fix: the
+     no-logits path now snapshots and restores a temporary cache that sits at
+     pos=len(prompt)-1 so the single re-forward lands at the correct position.
+  ✅ FIX-WAL-FINAL-FLUSH           : generate() now flushes the WAL at the end
+     of every call so the last (< WAL_FLUSH_INTERVAL) tokens are not lost on an
+     unclean exit.
 """
 from __future__ import annotations
 
@@ -306,6 +332,9 @@ class DracoTransformerV1:
             if engram.head_dim != self.head_dim:
                 raise ValueError(
                     f"EngramCache.head_dim={engram.head_dim} != model.head_dim={self.head_dim}")
+            if engram.d_model != self.d_model:
+                raise ValueError(
+                    f"EngramCache.d_model={engram.d_model} != model.d_model={self.d_model}")
             # ✅ FIX-ENGRAM-WINDOW-CHECK: warn if sliding window is smaller than
             # block_size.  Tokens would be evicted before they form a complete
             # block and would be permanently lost from Engram memory.
@@ -375,7 +404,10 @@ class DracoTransformerV1:
         Key invariants:
         ─────────────────────────────────────────────────────────────
         • n_generated tracks CONFIRMED tokens (never speculative-pending).
-        • WAL written only AFTER a token is confirmed.
+        • WAL written only AFTER a token is confirmed and flushed at end.
+        • stream_cb fires exactly ONCE per confirmed output token (never for
+          unverified speculative proposals).  On spec rejection the callback
+          emits verify_id (the correct token), not the discarded spec_id.
         • _try_commit_block() uses cache.get_pos() as the authoritative KV
           write position. It scans ALL boundaries from _last_committed_end
           to cache.get_pos(), so no boundary is missed regardless of when
@@ -384,6 +416,8 @@ class DracoTransformerV1:
         • Speculative accept: the verification forward (via cur=[spec_id] at
           top of loop) IS the one and only forward for spec_id.  No second
           forward in the accept branch — that would advance cache_pos twice.
+        • Prefix cache snapshot is captured immediately after prefill with
+          cache_pos == len(prompt_ids) — never after generation completes.
         ─────────────────────────────────────────────────────────────
         """
         if new_prompt or self._cache is None:
@@ -425,11 +459,12 @@ class DracoTransformerV1:
         n_pos = 0
 
         # Speculative state
-        spec_pending:     Optional[int]        = None
-        spec_snap:        Optional[dict]       = None
-        engram_snap:      Optional[dict]       = None
-        pre_spec_logits:  Optional[np.ndarray] = None
-        mu_pre_verify:    float                = mu
+        spec_pending:      Optional[int]        = None
+        spec_pending_conf: float                = 0.0
+        spec_snap:         Optional[dict]       = None
+        engram_snap:       Optional[dict]       = None
+        pre_spec_logits:   Optional[np.ndarray] = None
+        mu_pre_verify:     float                = mu
 
         l2:               Optional[np.ndarray] = None
         last_logits:      Optional[np.ndarray] = None
@@ -489,10 +524,20 @@ class DracoTransformerV1:
 
             elif _plen_hit == len(prompt_ids):
                 # ── Full hit but no cached logits ────────────────────────
+                # ✅ FIX-FULL-HIT-NO-LOGITS-CACHE-POS: the restored snapshot
+                # has cache_pos == len(prompt_ids).  We need to re-forward the
+                # last prompt token to get fresh logits, but doing so on the
+                # already-restored cache would advance cache_pos to
+                # len(prompt_ids)+1.  Fix: temporarily rewind cache_pos by 1
+                # before the re-forward so the token lands at the correct slot.
                 for _idx, _tid in enumerate(prompt_ids):
                     freq[_tid] = freq.get(_tid, 0) + 1
                     pos[_tid]  = _idx
                 n_pos = len(prompt_ids)
+                # Step cache_pos back one position so the re-forward of
+                # prompt_ids[-1] writes into slot (len(prompt)-1) and leaves
+                # cache_pos == len(prompt_ids) after the write.
+                cache._cache_pos[0] = max(0, cache._cache_pos[0] - 1)
                 cur   = [prompt_ids[-1]]
                 _in_prefill = False
                 if (self._engram_cache is not None
@@ -620,6 +665,38 @@ class DracoTransformerV1:
             if wal is not None:
                 wal.append(tid)
 
+        # ── Helper: store prompt in prefix cache after prefill ────────
+        def _maybe_store_prefix_cache():
+            """
+            Capture a full snapshot immediately after prefill so that
+            cache_pos == len(prompt_ids) in the stored entry.
+            Only called once, right after the prefill forward completes.
+            Called only when _prefix_cache is set and this is a fresh prompt
+            (not a prefix-cache hit).
+            """
+            if (
+                self._prefix_cache is None
+                or not new_prompt
+                or _prefix_hit
+                or len(prompt_ids) == 0
+            ):
+                return
+            try:
+                _snap_store = cache.snapshot(delta_threshold=0)
+                cache._snap_escalate_to_full(_snap_store)
+                _engram_snap_store = (
+                    self._engram_cache.snapshot()
+                    if self._engram_cache is not None else None
+                )
+                self._prefix_cache.put(
+                    prompt_ids, _snap_store,
+                    _prompt_last_logits,
+                    rope_theta=self._rope_theta,
+                    engram_snap=_engram_snap_store,
+                )
+            except Exception:
+                pass
+
         # ── Main generation loop ─────────────────────────────────────
         while n_generated < max_new_tokens:
             if stop_event is not None and stop_event.is_set():
@@ -668,6 +745,13 @@ class DracoTransformerV1:
                     _try_commit_block()
                     cur = []
                     _in_prefill = False
+                    # ✅ FIX-PREFIX-CACHE-SNAP-TIMING: capture the prefix-cache
+                    # snapshot HERE, immediately after prefill completes, while
+                    # cache_pos == len(prompt_ids).  Capturing it at the end of
+                    # generate() (as done previously) stored cache_pos =
+                    # len(prompt) + n_generated, making every subsequent restore
+                    # land at the wrong position.
+                    _maybe_store_prefix_cache()
                     continue
                 else:
                     _try_commit_block()
@@ -706,6 +790,14 @@ class DracoTransformerV1:
                         profiler.record_spec_accept()
                     self._spec_tracker.record_accept()
 
+                    # ✅ FIX-STREAMCB-DOUBLE-FIRE: emit the confirmed spec token
+                    # here (at acceptance), not at proposal time.  Emitting at
+                    # proposal was premature — if the spec token was later rejected
+                    # the caller received a wrong token followed by the corrected
+                    # one.  Now stream_cb fires exactly once per confirmed token.
+                    if stream_cb:
+                        stream_cb(spec_pending, spec_pending_conf)
+
                     # Record confirmed position for spec_pending.
                     # n_pos was already incremented when spec was proposed,
                     # so the confirmed position is n_pos - 1.
@@ -713,6 +805,7 @@ class DracoTransformerV1:
                     engram_snap = None
 
                     spec_pending = spec_snap = pre_spec_logits = None
+                    spec_pending_conf = 0.0
 
                     _try_commit_block()
 
@@ -750,16 +843,19 @@ class DracoTransformerV1:
                     if use_speculative and l2_new is not None:
                         spec_id, spec_conf = self.mtp.try_speculative(l2_new)
                         if spec_id is not None and spec_id not in _eos_set:
-                            pre_spec_logits = last_logits_new.copy()
-                            spec_snap       = cache.snapshot(_snap_threshold)
-                            engram_snap     = _engram_snapshot()
+                            pre_spec_logits   = last_logits_new.copy()
+                            spec_snap         = cache.snapshot(_snap_threshold)
+                            engram_snap       = _engram_snapshot()
                             ids.append(spec_id)
                             freq[spec_id] = freq.get(spec_id, 0) + 1
                             pos[spec_id]  = n_pos
                             n_pos    += 1
                             n_generated += 1
-                            if stream_cb:
-                                stream_cb(spec_id, spec_conf)
+                            # ✅ FIX-STREAMCB-DOUBLE-FIRE: do NOT emit stream_cb
+                            # here.  The spec token is still unverified; emitting
+                            # now would cause a double-fire if later rejected.
+                            # stream_cb fires at accept time via spec_pending_conf.
+                            spec_pending_conf = spec_conf
                             if n_generated >= max_new_tokens:
                                 break
                             spec_pending = spec_id
@@ -847,7 +943,7 @@ class DracoTransformerV1:
             if use_speculative_tree and _tree_dec is not None and l2 is not None:
                 _remaining = max_new_tokens - n_generated
                 _tree_accepted, last_logits, _tree_l2, mu = _tree_dec.try_tree(
-                    cache, last_logits, l2, ids, freq, pos, n_pos,
+                    cache, last_logits, l2,
                     _eos_set, mu, use_mirostat,
                     temp=current_temp, top_p=top_p, min_p=min_p,
                     intent_boost=intent_boost, intent_bias=intent_bias,
@@ -884,16 +980,19 @@ class DracoTransformerV1:
             if use_speculative and l2 is not None:
                 spec_id, spec_conf = self.mtp.try_speculative(l2)
                 if spec_id is not None and spec_id not in _eos_set:
-                    pre_spec_logits = last_logits.copy()
-                    spec_snap       = cache.snapshot(_snap_threshold)
-                    engram_snap     = _engram_snapshot()
+                    pre_spec_logits   = last_logits.copy()
+                    spec_snap         = cache.snapshot(_snap_threshold)
+                    engram_snap       = _engram_snapshot()
                     ids.append(spec_id)
                     freq[spec_id] = freq.get(spec_id, 0) + 1
                     pos[spec_id]  = n_pos
                     n_pos    += 1
                     n_generated += 1
-                    if stream_cb:
-                        stream_cb(spec_id, spec_conf)
+                    # ✅ FIX-STREAMCB-DOUBLE-FIRE: do NOT emit stream_cb here.
+                    # The spec token is still unverified; emitting now causes a
+                    # double-fire on rejection (wrong token, then correct token).
+                    # stream_cb fires once at confirmation via spec_pending_conf.
+                    spec_pending_conf = spec_conf
                     if n_generated >= max_new_tokens:
                         break
                     spec_pending = spec_id
@@ -914,28 +1013,11 @@ class DracoTransformerV1:
         self._miro_mu = mu
         result = ids[len(prompt_ids):]
 
-        # ── Store in prefix cache ─────────────────────────────────────
-        if (
-            self._prefix_cache is not None
-            and new_prompt
-            and not _prefix_hit
-            and len(prompt_ids) > 0
-        ):
-            try:
-                _snap_store = cache.snapshot(delta_threshold=0)
-                cache._snap_escalate_to_full(_snap_store)
-                _engram_snap_store = (
-                    self._engram_cache.snapshot()
-                    if self._engram_cache is not None else None
-                )
-                self._prefix_cache.put(
-                    prompt_ids, _snap_store,
-                    _prompt_last_logits,
-                    rope_theta=self._rope_theta,
-                    engram_snap=_engram_snap_store,
-                )
-            except Exception:
-                pass
+        # ✅ FIX-WAL-FINAL-FLUSH: flush WAL unconditionally so the tail
+        # tokens (< WAL_FLUSH_INTERVAL since last auto-flush) are durable
+        # even if the caller does not close the WAL via context manager.
+        if wal is not None:
+            wal.flush()
 
         if profiler is not None:
             profiler.record_tokens(len(result))

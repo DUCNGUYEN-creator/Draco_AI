@@ -27,8 +27,14 @@ FIXES (this revision):
      truncated to max_tokens, best_logits is updated to the logits from the
      LAST actually-replayed token (not the pre-truncation end of chain).
   ✅ FIX-UNUSED-VAR-WAS-TRUNCATED : removed the local variable `was_truncated`
-     that was assigned but never read.  The truncation condition only affects
-     `best_accepted`; no downstream code branches on this flag.
+     that was assigned but never read.
+  ✅ FIX-TREEDEC-DEAD-PARAMS   : removed ids, freq, pos, n_pos from try_tree()
+     signature — these parameters were accepted but never referenced in the
+     method body (confirmed by grep: 0 uses in body).  Keeping dead parameters
+     forces callers to compute and pass values that are silently thrown away,
+     wasting work and obscuring the true interface.  Callers updated to drop
+     those four arguments.  The public return value and all other parameters
+     are unchanged.
 """
 from __future__ import annotations
 import math
@@ -165,10 +171,6 @@ class SpeculativeTreeDecoder:
         cache:        "KVCache",
         logits:       np.ndarray,
         l2:           np.ndarray,
-        ids:          List[int],
-        freq:         dict,
-        pos:          dict,
-        n_pos:        int,
         _eos_set:     set,
         mu:           float,
         use_mirostat: bool,
@@ -184,6 +186,13 @@ class SpeculativeTreeDecoder:
     ) -> Tuple[List[int], np.ndarray, np.ndarray, float]:
         """
         Returns (accepted_ids, final_logits, final_l2, final_mu).
+
+        ✅ FIX-TREEDEC-DEAD-PARAMS: removed ids, freq, pos, n_pos from the
+        signature.  These four parameters were present in the previous
+        signature but had zero references inside the method body — every grep
+        confirms they were accepted and immediately discarded.  Removing them
+        eliminates unnecessary caller-side computation and makes the interface
+        truthful.  Callers in transformer.py updated to match.
 
         accepted_ids is truncated to max_tokens (if > 0) BEFORE replay so
         the KV cache is never ahead of what the generate loop actually commits
@@ -272,9 +281,6 @@ class SpeculativeTreeDecoder:
             # caller's remaining token budget BEFORE replaying into cache.
             # Without this, cache ends up with more KV entries than ids,
             # causing phantom attention positions on the next forward pass.
-            # ✅ FIX-UNUSED-VAR-WAS-TRUNCATED: the boolean flag is not needed
-            # — truncation only affects best_accepted in-place; downstream
-            # replay always uses best_logits from the last replayed token.
             if max_tokens > 0 and len(best_accepted) > max_tokens:
                 best_accepted = best_accepted[:max_tokens]
 
@@ -282,10 +288,6 @@ class SpeculativeTreeDecoder:
             # cache so KV exactly matches the committed token sequence.
             # ✅ FIX-TREE-LOGITS-STALE-AFTER-TRUNCATION: capture l1 from the
             # replay loop so best_logits reflects the LAST replayed token.
-            # When truncation occurred, the pre-truncation best_logits was
-            # from beyond the cut-off point; the caller must receive logits
-            # from the actual last committed token for correct next-step
-            # sampling.
             if best_accepted:
                 replay_l2     = best_l2
                 replay_logits = best_logits

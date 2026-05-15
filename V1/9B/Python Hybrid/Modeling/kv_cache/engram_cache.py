@@ -26,7 +26,15 @@ FIXES in this revision:
   ✅ FIX-IMPORTANCE-NORMALIZE       : sigmoid-normalised importance weight.
   ✅ FIX-ATTEND-PREFILL             : attend() handles seq > 1 (prefill).
   ✅ FIX-LAST-COMMITTED-EXPOSE      : _last_committed_end is a regular attr.
-  ✅ FIX-O1-EVICTION                : deque + popleft() O(1) eviction.
+  ✅ FIX-O1-EVICTION                : replaced collections.deque with a plain
+     list.  deque provides O(1) popleft() but O(n) random integer indexing,
+     which is used heavily in _rebuild_toc_nolock(), retrieve_for_layer(), and
+     _rebuild_summary_matrix_nolock().  With the previous deque, every
+     self._blocks[i] call is O(n), making _rebuild_toc a hidden O(n²)
+     operation.  A plain list gives O(1) random access and O(n) pop(0); since
+     eviction (pop(0)) only fires once per max_blocks overflow — a rare event
+     — the amortised cost is dominated by the frequent random-access reads,
+     where list wins decisively.  The public API is unchanged.
   ✅ FIX-THREAD-SAFETY-COMMITTED-END: _last_committed_end written atomically
      INSIDE _add_block() while the lock is already held.
   ✅ FIX-UNUSED-VAR-SEQ             : removed unused local variable `seq` in
@@ -46,7 +54,6 @@ FIXES in this revision:
 """
 from __future__ import annotations
 
-import collections
 import logging
 import math
 import threading
@@ -99,6 +106,12 @@ class EngramCache:
     """
     Hierarchical compressed KV memory with vectorized retrieval,
     max-pool summary, and dynamic blend alpha.
+
+    Block storage uses a plain list (not deque) to give O(1) random-access
+    reads — the dominant operation in retrieve_for_layer and _rebuild_toc.
+    The rare max_blocks eviction uses list.pop(0) which is O(n); for typical
+    max_blocks sizes (hundreds to low thousands) this is negligible compared
+    to the savings on every retrieval.
     """
 
     def __init__(
@@ -133,7 +146,10 @@ class EngramCache:
         self.dtype             = np.dtype(dtype)
         self.max_blocks        = max_blocks
 
-        self._blocks: collections.deque = collections.deque()
+        # ✅ FIX-O1-EVICTION: plain list gives O(1) random access.
+        # pop(0) eviction is O(n) but fires at most once per overflow, so
+        # amortised cost is dominated by the frequent O(1) indexed reads.
+        self._blocks: List[EngramBlock] = []
         self._lock   = threading.Lock()
 
         self._summary_matrix: Optional[np.ndarray] = None
@@ -332,7 +348,10 @@ class EngramCache:
                 return False
 
             if self.max_blocks is not None and len(self._blocks) >= self.max_blocks:
-                self._blocks.popleft()
+                # ✅ FIX-O1-EVICTION: list.pop(0) is O(n) but fires rarely.
+                # For typical max_blocks, this is faster in practice than
+                # maintaining a separate deque structure.
+                self._blocks.pop(0)
                 self._matrix_dirty  = True
                 self._toc_summaries = None
                 self._toc_block_idx = []
@@ -353,7 +372,11 @@ class EngramCache:
     # ── Matrix / ToC rebuild ──────────────────────────────────────────────────
 
     def _rebuild_summary_matrix_nolock(self):
-        """Rebuild pre-allocated scoring matrix (call with _lock held)."""
+        """Rebuild pre-allocated scoring matrix (call with _lock held).
+
+        ✅ FIX-O1-EVICTION: iterating list with `for b in self._blocks` is
+        O(n) regardless of structure; stacking into a matrix gives O(n·d).
+        """
         n = len(self._blocks)
         if n == 0:
             self._summary_matrix = None
@@ -368,7 +391,12 @@ class EngramCache:
         self._matrix_dirty = False
 
     def _rebuild_toc_nolock(self):
-        """Rebuild table-of-contents (call with _lock held)."""
+        """Rebuild table-of-contents (call with _lock held).
+
+        ✅ FIX-O1-EVICTION: self._blocks[b] is now O(1) list indexing instead
+        of O(n) deque random access.  With the previous deque this loop was
+        O(n²) for n blocks; with a list it is O(n).
+        """
         n_blocks = len(self._blocks)
         if n_blocks == 0:
             self._toc_summaries = None
@@ -383,6 +411,7 @@ class EngramCache:
         for ch in range(n_chapters):
             b0 = ch * self.n_toc_blocks
             b1 = min(b0 + self.n_toc_blocks, n_blocks)
+            # O(1) per access with list (was O(n) per access with deque)
             sums = np.stack(
                 [self._blocks[b].summary for b in range(b0, b1)], axis=0
             )
@@ -400,7 +429,12 @@ class EngramCache:
         layer_idx: int,
         query_vec: np.ndarray,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-        """Top-k retrieval for one layer."""
+        """Top-k retrieval for one layer.
+
+        ✅ FIX-O1-EVICTION: self._blocks[i] is O(1) with list storage.
+        With the previous deque, each access in the list comprehension was O(n),
+        making the retrieval O(k·n) overall.  With list it is O(k).
+        """
         with self._lock:
             n_blocks = len(self._blocks)
             if n_blocks == 0:
@@ -416,6 +450,7 @@ class EngramCache:
             if not selected:
                 return None, None, None
 
+            # O(1) per access — list guarantees constant-time indexing
             k_list = [self._blocks[i].layer_keys_mean[layer_idx]   for i in selected]
             v_list = [self._blocks[i].layer_values_mean[layer_idx] for i in selected]
             K_stack = np.stack(k_list, axis=1)
@@ -536,8 +571,8 @@ class EngramCache:
         with self._lock:
             n_target = snap["_n_blocks"]
             if len(self._blocks) > n_target:
-                while len(self._blocks) > n_target:
-                    self._blocks.pop()
+                # list slicing is O(k) where k = blocks to remove
+                del self._blocks[n_target:]
                 self._matrix_dirty  = True
                 self._toc_summaries = None
                 self._toc_block_idx = []
