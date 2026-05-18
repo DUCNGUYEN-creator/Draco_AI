@@ -12,7 +12,7 @@ Architecture (three tiers):
            │            │ → 1 chapter vector. Enables O(1) coarse lookup.
 ──────────────────────────────────────────────────────────────────────────────
 
-FIXES in this revision:
+FIXES / NEW in this revision:
   ✅ FIX-ENGRAM-COMMIT              : commit_block() API; generate() passes
      pre-sliced K/V tensors directly while block is still in window.
   ✅ FIX-ENGRAM-TEMPORAL-OFFSET     : _extract_block_from_cache() uses simple
@@ -51,6 +51,13 @@ FIXES in this revision:
      commit_block() is kept as a cheap fast path to avoid redundant
      compression work; the lock-protected check in _add_block() is the
      authoritative gate.
+  ✅ FIX-ADVANCE-COMMITTED-END-API  : added advance_committed_end(end_pos)
+     public method.  transformer.py's _try_commit_block() previously wrote
+     _last_committed_end directly without holding the lock (bypassing the
+     TOCTOU-safe _add_block() gate).  Now callers route eviction-skip pointer
+     advances through this method which acquires the lock atomically.  This
+     keeps _last_committed_end consistent whether the advance comes from a
+     real block commit or an eviction skip.
 """
 from __future__ import annotations
 
@@ -147,8 +154,6 @@ class EngramCache:
         self.max_blocks        = max_blocks
 
         # ✅ FIX-O1-EVICTION: plain list gives O(1) random access.
-        # pop(0) eviction is O(n) but fires at most once per overflow, so
-        # amortised cost is dominated by the frequent O(1) indexed reads.
         self._blocks: List[EngramBlock] = []
         self._lock   = threading.Lock()
 
@@ -162,9 +167,8 @@ class EngramCache:
         scale = 1.0 / math.sqrt(head_dim)
         self._W_summary = np.eye(head_dim, dtype=np.float32) * scale
 
-        # _last_committed_end is updated INSIDE _add_block() while the lock
-        # is held, so block visibility and pointer advancement are always
-        # atomic w.r.t. the lock.
+        # _last_committed_end is updated INSIDE _add_block() or
+        # advance_committed_end() while the lock is held — always atomic.
         self._last_committed_end: int = 0
         self._n_commits   = 0
         self._n_retrieves = 0
@@ -186,12 +190,8 @@ class EngramCache:
         ✅ FIX-COMMIT-BLOCK-TOCTOU: the cheap early-out below avoids wasting
         CPU on compression for obviously-stale blocks, but is NOT the
         authoritative duplicate guard — _add_block() re-checks under the lock.
-        Two threads that both pass this check will compete inside _add_block()
-        where only the first writer commits; the second is silently dropped.
         """
-        # Fast-path: cheap non-locked pre-check to skip obvious duplicates and
-        # avoid expensive compression work.  NOT authoritative — race window
-        # exists here; _add_block() holds the definitive lock-protected check.
+        # Fast-path pre-check (non-locked, NOT authoritative).
         if end_pos <= self._last_committed_end:
             return False
         block_len = end_pos - start_pos
@@ -233,8 +233,26 @@ class EngramCache:
             summary           = summary,
             importance        = importance,
         )
-        # _add_block re-checks end_pos under the lock (definitive duplicate guard).
         return self._add_block(blk, committed_end=end_pos)
+
+    # ── Lock-safe pointer advance ─────────────────────────────────────────────
+
+    def advance_committed_end(self, end_pos: int) -> None:
+        """
+        Advance _last_committed_end to end_pos under the lock.
+
+        ✅ FIX-ADVANCE-COMMITTED-END-API: transformer.py _try_commit_block()
+        must route all _last_committed_end updates through this method (or
+        commit_block()) so that the pointer is always advanced while the lock
+        is held.  Direct attribute writes bypassed the TOCTOU-safe _add_block()
+        gate and could produce phantom positions visible to concurrent readers.
+
+        This method is a no-op if end_pos <= current _last_committed_end,
+        making it safe to call redundantly (idempotent advance).
+        """
+        with self._lock:
+            if end_pos > self._last_committed_end:
+                self._last_committed_end = end_pos
 
     # ── Legacy compatibility shim ─────────────────────────────────────────────
 
@@ -257,9 +275,8 @@ class EngramCache:
             oldest_accessible = max(0, current_pos - window)
             if block_start < oldest_accessible:
                 block_start = block_end
-                # Advance pointer atomically inside lock
-                with self._lock:
-                    self._last_committed_end = max(self._last_committed_end, block_end)
+                # ✅ Use lock-protected advance.
+                self.advance_committed_end(block_end)
                 continue
 
             blk = self._extract_block_from_cache(
@@ -335,12 +352,6 @@ class EngramCache:
 
         Returns True if the block was inserted, False if it was a duplicate
         (detected under the lock — the authoritative duplicate guard).
-
-        ✅ FIX-COMMIT-BLOCK-TOCTOU: committed_end is re-checked against
-        _last_committed_end INSIDE the lock before appending.  This makes the
-        duplicate test atomic with the insert: two threads that both passed the
-        cheap pre-check in commit_block() will compete here; only the first
-        commits, the second is dropped cleanly.
         """
         with self._lock:
             # ✅ Authoritative duplicate guard (under lock).
@@ -348,9 +359,6 @@ class EngramCache:
                 return False
 
             if self.max_blocks is not None and len(self._blocks) >= self.max_blocks:
-                # ✅ FIX-O1-EVICTION: list.pop(0) is O(n) but fires rarely.
-                # For typical max_blocks, this is faster in practice than
-                # maintaining a separate deque structure.
                 self._blocks.pop(0)
                 self._matrix_dirty  = True
                 self._toc_summaries = None
@@ -360,7 +368,6 @@ class EngramCache:
             self._n_commits   += 1
             self._matrix_dirty = True
 
-            # Advance committed pointer atomically with the block append.
             if committed_end is not None:
                 self._last_committed_end = committed_end
 
@@ -372,11 +379,7 @@ class EngramCache:
     # ── Matrix / ToC rebuild ──────────────────────────────────────────────────
 
     def _rebuild_summary_matrix_nolock(self):
-        """Rebuild pre-allocated scoring matrix (call with _lock held).
-
-        ✅ FIX-O1-EVICTION: iterating list with `for b in self._blocks` is
-        O(n) regardless of structure; stacking into a matrix gives O(n·d).
-        """
+        """Rebuild pre-allocated scoring matrix (call with _lock held)."""
         n = len(self._blocks)
         if n == 0:
             self._summary_matrix = None
@@ -391,12 +394,7 @@ class EngramCache:
         self._matrix_dirty = False
 
     def _rebuild_toc_nolock(self):
-        """Rebuild table-of-contents (call with _lock held).
-
-        ✅ FIX-O1-EVICTION: self._blocks[b] is now O(1) list indexing instead
-        of O(n) deque random access.  With the previous deque this loop was
-        O(n²) for n blocks; with a list it is O(n).
-        """
+        """Rebuild table-of-contents (call with _lock held)."""
         n_blocks = len(self._blocks)
         if n_blocks == 0:
             self._toc_summaries = None
@@ -411,7 +409,6 @@ class EngramCache:
         for ch in range(n_chapters):
             b0 = ch * self.n_toc_blocks
             b1 = min(b0 + self.n_toc_blocks, n_blocks)
-            # O(1) per access with list (was O(n) per access with deque)
             sums = np.stack(
                 [self._blocks[b].summary for b in range(b0, b1)], axis=0
             )
@@ -429,12 +426,7 @@ class EngramCache:
         layer_idx: int,
         query_vec: np.ndarray,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-        """Top-k retrieval for one layer.
-
-        ✅ FIX-O1-EVICTION: self._blocks[i] is O(1) with list storage.
-        With the previous deque, each access in the list comprehension was O(n),
-        making the retrieval O(k·n) overall.  With list it is O(k).
-        """
+        """Top-k retrieval for one layer."""
         with self._lock:
             n_blocks = len(self._blocks)
             if n_blocks == 0:
@@ -450,7 +442,6 @@ class EngramCache:
             if not selected:
                 return None, None, None
 
-            # O(1) per access — list guarantees constant-time indexing
             k_list = [self._blocks[i].layer_keys_mean[layer_idx]   for i in selected]
             v_list = [self._blocks[i].layer_values_mean[layer_idx] for i in selected]
             K_stack = np.stack(k_list, axis=1)
@@ -521,12 +512,7 @@ class EngramCache:
         scale:       float,
         softmax_eps: float = 1e-9,
     ) -> Tuple[Optional[np.ndarray], float]:
-        """Cross-attention of Q over engram KV for this layer.
-
-        ✅ FIX-UNUSED-VAR-SEQ: removed `seq = Q.shape[2]` which was assigned
-        but never used in the method body.  The query mean is computed
-        directly from Q[0] and Q[0, :, :, :].mean(axis=1).
-        """
+        """Cross-attention of Q over engram KV for this layer."""
         query_vec = Q[0, :, :, :].mean(axis=1)
         kv_query  = query_vec.reshape(
             self.n_kv_heads, n_rep, self.head_dim).mean(axis=1)
@@ -571,7 +557,6 @@ class EngramCache:
         with self._lock:
             n_target = snap["_n_blocks"]
             if len(self._blocks) > n_target:
-                # list slicing is O(k) where k = blocks to remove
                 del self._blocks[n_target:]
                 self._matrix_dirty  = True
                 self._toc_summaries = None

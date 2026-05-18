@@ -4,92 +4,58 @@
 DracoAI Transformer V1 — conductor module.
 
 FIXES (this revision):
-  ✅ FIX-IMPORT-INFERENCE-CONTEXT  : removed non-existent runtime/inference_context
-     module; imports go directly to tensor_pool, profiler, health, precision, wal.
-  ✅ FIX-DUPLICATE-TRANSFORMERBLOCK: TransformerBlock is defined ONLY in
-     layers/block.py and imported here — no local redefinition.
-  ✅ FIX-SPEC-MISSING-KV           : after verify accepts spec_pending, the
-     engine immediately forwards spec_pending into the cache.
-  ✅ FIX-DOUBLE-FORWARD-ACCEPT     : after forwarding spec_pending we use the
-     returned logits directly; cur is set to [] so the main loop does NOT
-     re-forward the same token.
-  ✅ FIX-N_POS-SPEC-ACCEPT         : pos[spec_pending] recorded before sampling nid.
+  ✅ FIX-IMPORT-INFERENCE-CONTEXT  : removed non-existent runtime/inference_context.
+  ✅ FIX-DUPLICATE-TRANSFORMERBLOCK: TransformerBlock imported from layers/block.py.
+  ✅ FIX-SPEC-MISSING-KV           : after accept, spec_pending KV already written.
+  ✅ FIX-DOUBLE-FORWARD-ACCEPT     : no second forward in accept branch.
+  ✅ FIX-N_POS-SPEC-ACCEPT         : pos[spec_pending] recorded correctly.
   ✅ FIX-L2-UPDATE-AFTER-TREE      : l2 updated to tree's final_l2.
   ✅ FIX-WAL-SPEC-ORDERING         : WAL written only after acceptance.
   ✅ FIX-TREE-BUDGET-OVERFLOW      : budget cap checked per-token inside loop.
   ✅ FIX-LLAMA-DUPLICATE-KWARGS    : top_p/temperature not duplicated in bridge.
   ✅ FIX-LOAD-EXTERNAL-INVALIDATE  : _invalidate_stacked() called per-block.
   ✅ FIX-KVCACHE-VECTORISED-UPDATE : vectorised slot assignment in KVCache.update().
-  ✅ FIX-ENCAPSULATION-CACHE-POS   : GQAttention now calls cache.get_pos().
-  ✅ FIX-MU-CONTAMINATION-REJECT   : on spec rejection, mu restored before resample.
+  ✅ FIX-ENCAPSULATION-CACHE-POS   : GQAttention calls cache.get_pos().
+  ✅ FIX-MU-CONTAMINATION-REJECT   : mu restored before resample on rejection.
   ✅ FIX-NPOS-OFFBYONE-REJECT      : rep-penalty recomputation uses (n_pos - 1).
-  ✅ FIX-TREE-DECODER-ALLOC        : SpeculativeTreeDecoder allocated once per
-     generate() call.
-  ✅ FIX-TREE-BUDGET-KV-DESYNC     : remaining token budget passed to try_tree().
-  ✅ FIX-LLAMA-FALLBACK-PROMPT     : create_completion fallback raises RuntimeError.
-  ✅ FIX-ENGRAM-COMMIT-TIMING      : _try_commit_block() now uses cache.get_pos()
-     as the sole authoritative position — eliminates off-by-one where n_pos is
-     incremented for a new token BEFORE forward() writes that token's KV.
-     The function scans ALL boundaries from _last_committed_end up to
-     cache.get_pos(), so no block is ever silently skipped.
-  ✅ FIX-ENGRAM-PREFILL-TRACKING   : replaced fragile "cur is ids" identity check
-     with explicit _in_prefill flag; freq/pos/n_pos are always populated for
-     every token forwarded during prefill, including partial-prefix-cache-hit
-     suffixes.
-  ✅ FIX-ENGRAM-SPEC-REJECT-EOS    : engram commit called after forward([verify_id])
-     on the EOS-in-reject path so the EOS token's K/V block boundary is never lost.
-  ✅ FIX-ENGRAM-SNAP-RESTORE       : snapshot/restore still works correctly with
-     the new commit API via engram.snapshot() / engram.restore().
-  ✅ FIX-ENGRAM-DEEP-INTEGRATION   : EngramCache is forwarded through every
-     TransformerBlock → GQAttention call, enabling three-tier hierarchical memory.
-  ✅ FIX-DECODE-COMMIT             : _try_commit_block() now called in the else
-     branch after normal decode forward; previously only on speculative/tree events.
-  ✅ FIX-ENGRAM-WINDOW-CHECK       : set_engram_cache() emits RuntimeWarning
-     when window < block_size to prevent silent permanent token loss.
-  ✅ FIX-PREFIX-ENGRAM-SNAPSHOT    : generate() stores engram.snapshot() in
-     prefix_cache.put() and restores it on full-hit get().  All three full-hit
-     sub-cases are handled: (a) logits+engram_snap, (b) no-logits+engram_snap,
-     (c) legacy entry with no engram_snap.
-  ✅ FIX-FULL-HIT-NO-LOGITS-PREFILL: Full-hit path that re-forwards last token
-     now uses _in_prefill=False so freq/pos/n_pos are NOT double-counted.
-  ✅ FIX-UNUSED-IMPORTS            : removed unused imports MOE_NOISE_SCALE,
-     GQAttention, ExpertFFN, MoELayer, mm, RequestHandle,
-     ContinuousBatchingScheduler — none of these are referenced in the module
-     body; they are all re-exported from their respective sub-packages and do
-     not need to be imported here.
-  ✅ FIX-STREAMCB-DOUBLE-FIRE        : stream_cb previously fired at spec
-     proposal time (optimistic/premature) AND again at rejection time with the
-     correct token.  Callers received two callbacks for one generation position:
-     first a wrong token, then the right one.  Fix: stream_cb is now suppressed
-     at proposal; it fires exactly once when the spec token is CONFIRMED in the
-     accept branch (via stored spec_pending_conf), or once with verify_id in
-     the reject branch.  Zero duplicate callbacks, no missed tokens.
-  ✅ FIX-TREEDEC-DEAD-PARAMS       : try_tree() no longer accepts ids, freq,
-     pos, n_pos — these were silently unused.  Call site updated to match.
-  ✅ FIX-SPEC-ACCEPT-DOUBLE-FORWARD: the second forward([spec_pending]) in the
-     accept branch was redundant and HARMFUL — the first forward (via
-     cur=[spec_id] at top of loop) already wrote the KV correctly and produced
-     valid last_logits / l2.  The second forward incremented cache_pos a second
-     time, placing the next token's KV one slot ahead of where the sequence
-     actually was, causing phantom attention positions.  Removed; accept branch
-     now uses the last_logits and l2 already computed by the verification forward.
-  ✅ FIX-PREFIX-CACHE-SNAP-TIMING  : prefix_cache snapshot was previously taken
-     AFTER generation completed, so the stored cache_pos included all generated
-     tokens.  On the next call with the same prompt the restored cache_pos was
-     wrong (prompt_len + prev_generated), causing every subsequent token's KV to
-     be written at a phantom position.  Fix: the snapshot is now captured
-     immediately after prefill completes (inside the _in_prefill branch) while
-     cache_pos == len(prompt_ids).  The post-generation store block is removed.
-  ✅ FIX-FULL-HIT-NO-LOGITS-CACHE-POS: Full prefix-cache hit (no cached logits)
-     called cache.restore(snap) then forwarded prompt_ids[-1] again.  Since the
-     restored snap already has cache_pos == len(prompt_ids), the extra forward
-     advanced cache_pos to len(prompt_ids)+1 — every subsequent decode token's
-     KV landed one position ahead of where the sequence actually was.  Fix: the
-     no-logits path now snapshots and restores a temporary cache that sits at
-     pos=len(prompt)-1 so the single re-forward lands at the correct position.
-  ✅ FIX-WAL-FINAL-FLUSH           : generate() now flushes the WAL at the end
-     of every call so the last (< WAL_FLUSH_INTERVAL) tokens are not lost on an
-     unclean exit.
+  ✅ FIX-TREE-DECODER-ALLOC        : SpeculativeTreeDecoder allocated once per call.
+  ✅ FIX-TREE-BUDGET-KV-DESYNC     : remaining budget passed to try_tree().
+  ✅ FIX-LLAMA-FALLBACK-PROMPT     : fallback raises RuntimeError.
+  ✅ FIX-ENGRAM-COMMIT-TIMING      : _try_commit_block() uses cache.get_pos().
+  ✅ FIX-ENGRAM-PREFILL-TRACKING   : explicit _in_prefill flag.
+  ✅ FIX-ENGRAM-SPEC-REJECT-EOS    : engram commit after EOS-reject forward.
+  ✅ FIX-ENGRAM-SNAP-RESTORE       : engram snapshot/restore for spec rollback.
+  ✅ FIX-ENGRAM-DEEP-INTEGRATION   : EngramCache passed through every block.
+  ✅ FIX-DECODE-COMMIT             : _try_commit_block() called in decode else-branch.
+  ✅ FIX-ENGRAM-WINDOW-CHECK       : RuntimeWarning when window < block_size.
+  ✅ FIX-PREFIX-ENGRAM-SNAPSHOT    : engram snapshot stored/restored with prefix cache.
+  ✅ FIX-FULL-HIT-NO-LOGITS-PREFILL: _in_prefill=False on no-logits full-hit path.
+  ✅ FIX-UNUSED-IMPORTS            : removed unused imports.
+  ✅ FIX-STREAMCB-DOUBLE-FIRE      : stream_cb fires exactly once per confirmed token.
+  ✅ FIX-TREEDEC-DEAD-PARAMS       : try_tree() dead params removed.
+  ✅ FIX-SPEC-ACCEPT-DOUBLE-FORWARD: removed harmful second forward in accept branch.
+  ✅ FIX-PREFIX-CACHE-SNAP-TIMING  : prefix cache snapshot captured immediately after
+     prefill (cache_pos == len(prompt_ids)), NOT after generation completes.
+     Previously the snapshot stored cache_pos = len(prompt) + n_generated, so
+     every subsequent restore placed KV writes at phantom positions.
+  ✅ FIX-FULL-HIT-NO-LOGITS-CACHE-POS: restored snapshot has cache_pos == len(prompt).
+     Re-forwarding prompt_ids[-1] would push it to len(prompt)+1.  Fix: rewind
+     cache_pos by 1 before the re-forward so the write lands at the correct slot.
+  ✅ FIX-REP-PENALTY-REJECT-SPEC   : in the spec-reject branch freq[spec_pending]
+     is still inflated +1 from the proposal.  Old code skipped it entirely with
+     `continue`, giving it zero penalty.  Fix: use actual_cnt = cnt - 1 for the
+     spec token so the penalty reflects the true pre-proposal history.
+  ✅ FIX-PREFIX-CACHE-SILENT-SWALLOW: prefix cache store errors now emit a DEBUG
+     log instead of being silently discarded (except Exception: pass).
+  ✅ FIX-ENGRAM-DMODEL-CHECK       : set_engram_cache() validates d_model too.
+  ✅ FIX-WAL-FINAL-FLUSH           : wal.flush() called before returning so the
+     last < WAL_FLUSH_INTERVAL tokens are durable even without context manager.
+  ✅ FIX-COMMIT-BLOCK-LOCKLESS     : _try_commit_block() previously wrote
+     _last_committed_end directly without the EngramCache lock, bypassing the
+     TOCTOU-safe _add_block() gate.  Fix: the eviction-skip path now calls
+     engram_cache.advance_committed_end(block_end) which performs the write
+     atomically under the lock, consistent with commit_block()'s authoritative
+     duplicate guard.  Added advance_committed_end() to EngramCache API.
 """
 from __future__ import annotations
 
@@ -110,24 +76,19 @@ from .constants import (
 )
 from .config import ModelConfig
 
-# Layers — only TransformerBlock is instantiated directly in this module
 from .layers.block      import TransformerBlock
 from .ops.tensor_ops    import rms_norm
 
-# Cache
 from .kv_cache.kv_cache     import KVCache
 from .kv_cache.prefix_cache import PrefixCache
 from .kv_cache.engram_cache import EngramCache
 
-# Quantisation
 from .quant.int4         import QuantizedLinear
 from .quant.quant_linear import quantize_model_weights
 from .quant.gguf_loader  import GGUFExporter
 
-# Sampling
 from .sampling.sampler import Sampler
 
-# Runtime
 from .runtime.tensor_pool import TensorPool
 from .runtime.health      import HealthMonitor
 from .runtime.precision   import DynamicPrecisionManager
@@ -141,40 +102,8 @@ logger = logging.getLogger(__name__)
 _SPEC_RECHECK_INTERVAL = 16
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DracoTransformerV1
-# ─────────────────────────────────────────────────────────────────────────────
-
 class DracoTransformerV1:
-    """DracoAI Transformer V1 — pure-NumPy inference engine.
-
-    Deep Engram integration
-    ───────────────────────
-    Set an EngramCache via set_engram_cache() to enable three-tier hierarchical
-    memory.  Once set:
-
-    * forward() automatically passes the engram down through every
-      TransformerBlock → GQAttention, blending Engram cross-attention with
-      exact sliding-window attention at the hidden-state level before W_o.
-
-    * generate() calls _try_commit_block() after every confirmed forward so
-      the Engram continuously absorbs completed blocks.  The function uses
-      cache.get_pos() as the authoritative write position — no off-by-one.
-
-    * Speculative decoding takes Engram snapshots before each proposal and
-      restores them on rejection, maintaining exact Engram ↔ KV consistency.
-
-    Example::
-
-        model = DracoTransformerV1(config)
-        engram = EngramCache(
-            n_layers=config.n_layers, n_kv_heads=config.n_kv_heads,
-            head_dim=config.head_dim, d_model=config.d_model,
-            block_size=128, top_k_retrieve=8, blend_alpha=0.85,
-        )
-        model.set_engram_cache(engram)
-        out = model.generate([1, 2, 3], max_new_tokens=1_000_000)
-    """
+    """DracoAI Transformer V1 — pure-NumPy inference engine."""
 
     def __init__(self, config, dtype: np.dtype = np.float32,
                  quant_mode: Optional[str] = None, quant_group_size: int = 128):
@@ -203,7 +132,7 @@ class DracoTransformerV1:
         self.embedding = (
             np.random.randn(self.vocab_size, self.d_model) * scale
         ).astype(self._dtype)
-        self.lm_head = self.embedding  # weight-tied
+        self.lm_head = self.embedding
 
         self.blocks: List[TransformerBlock] = [
             TransformerBlock(
@@ -216,7 +145,6 @@ class DracoTransformerV1:
         self.mtp    = MTPHead(self.d_model, self.vocab_size)
         self.mtp.lm_head = self.lm_head
 
-        # Optional runtime components
         self._cache:             Optional[KVCache]                 = None
         self._miro_mu:           float                             = 5.0
         self._memmap_cache:      bool                              = False
@@ -230,7 +158,6 @@ class DracoTransformerV1:
         self._lm_head_f32:       Optional[np.ndarray]              = None
         self._spec_tracker = SpeculativeDecoder()
 
-    # ── Cache factory ─────────────────────────────────────────────────
     def _make_cache(self, max_batch: int = 1) -> KVCache:
         return KVCache(
             self.n_layers, self.n_kv_heads, self.head_dim,
@@ -239,7 +166,6 @@ class DracoTransformerV1:
             max_batch=max_batch,
         )
 
-    # ── Forward pass ──────────────────────────────────────────────────
     def forward(
         self,
         token_ids:    List[int],
@@ -250,17 +176,8 @@ class DracoTransformerV1:
         snap:         Optional[dict] = None,
         batch_idx:    int = 0,
     ) -> Tuple[np.ndarray, np.ndarray, List[Dict]]:
-        """
-        Returns (l1_logits, l2_logits, aux_list).
-        l1 = main LM-head logits.
-        l2 = MTP draft logits (used for speculative prediction).
-
-        Deep Engram integration: when self._engram_cache is set, it is
-        passed down to each TransformerBlock → GQAttention, blending Engram
-        cross-attention with exact sliding-window attention before W_o.
-        """
         ids = np.clip(np.array(token_ids, dtype=np.int32), 0, self.vocab_size - 1)
-        x   = self.embedding[ids][None]           # (1, seq, d_model)
+        x   = self.embedding[ids][None]
         aux_list: List[Dict] = []
 
         for block in self.blocks:
@@ -291,7 +208,6 @@ class DracoTransformerV1:
 
         return l1, l2, aux_list
 
-    # ── Sanity checks ─────────────────────────────────────────────────
     @staticmethod
     def _sanity_checks(logits: np.ndarray, label: str = ""):
         if np.any(np.isnan(logits)):
@@ -299,7 +215,6 @@ class DracoTransformerV1:
         if np.any(np.isinf(logits)):
             raise RuntimeError(f"Inf in logits {label}")
 
-    # ── Sampling helpers ──────────────────────────────────────────────
     @staticmethod
     def _sample_mirostat_v2(logits, mu, tau=5.0, eta=0.1):
         return Sampler.mirostat_v2(logits, mu, tau, eta)
@@ -309,35 +224,29 @@ class DracoTransformerV1:
                           top_k=50, min_p=0.0):
         return Sampler.topk_topp(logits, temp, top_p, top_k, min_p)
 
-    # ── Setters for optional runtime components ───────────────────────
     def set_prefix_cache(self, cache: Optional[PrefixCache]):
         self._prefix_cache = cache
 
     def set_engram_cache(self, engram: Optional[EngramCache]):
-        """
-        Attach an EngramCache for deep three-tier hierarchical memory.
-
-        When set, every forward() call will blend Engram cross-attention
-        with exact sliding-window attention inside GQAttention, and
-        generate() will continuously commit completed blocks into the Engram.
-        Set to None to disable Engram (pure sliding-window mode).
-        """
+        """Attach an EngramCache for three-tier hierarchical memory."""
         if engram is not None:
             if engram.n_layers != self.n_layers:
                 raise ValueError(
-                    f"EngramCache.n_layers={engram.n_layers} != model.n_layers={self.n_layers}")
+                    f"EngramCache.n_layers={engram.n_layers} != "
+                    f"model.n_layers={self.n_layers}")
             if engram.n_kv_heads != self.n_kv_heads:
                 raise ValueError(
-                    f"EngramCache.n_kv_heads={engram.n_kv_heads} != model.n_kv_heads={self.n_kv_heads}")
+                    f"EngramCache.n_kv_heads={engram.n_kv_heads} != "
+                    f"model.n_kv_heads={self.n_kv_heads}")
             if engram.head_dim != self.head_dim:
                 raise ValueError(
-                    f"EngramCache.head_dim={engram.head_dim} != model.head_dim={self.head_dim}")
+                    f"EngramCache.head_dim={engram.head_dim} != "
+                    f"model.head_dim={self.head_dim}")
+            # ✅ FIX-ENGRAM-DMODEL-CHECK
             if engram.d_model != self.d_model:
                 raise ValueError(
-                    f"EngramCache.d_model={engram.d_model} != model.d_model={self.d_model}")
-            # ✅ FIX-ENGRAM-WINDOW-CHECK: warn if sliding window is smaller than
-            # block_size.  Tokens would be evicted before they form a complete
-            # block and would be permanently lost from Engram memory.
+                    f"EngramCache.d_model={engram.d_model} != "
+                    f"model.d_model={self.d_model}")
             if self.window < engram.block_size:
                 import warnings
                 warnings.warn(
@@ -345,9 +254,7 @@ class DracoTransformerV1:
                     f"KVCache.window ({self.window}). Tokens will be evicted "
                     f"before they can be compressed into Engram blocks. "
                     f"Increase window or reduce block_size.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+                    RuntimeWarning, stacklevel=2)
         self._engram_cache = engram
 
     def set_tensor_pool(self, pool: Optional[TensorPool]):
@@ -365,8 +272,6 @@ class DracoTransformerV1:
             if 0 <= tid < self.vocab_size:
                 self._id_bias[tid] = boost
 
-    # ─────────────────────────────────────────────────────────────────
-    # generate()
     # ─────────────────────────────────────────────────────────────────
     def generate(
         self,
@@ -398,28 +303,6 @@ class DracoTransformerV1:
         checkpoint_path:      Optional[str] = None,
         wal:                  Optional[WriteAheadLog] = None,
     ) -> List[int]:
-        """
-        Generate up to max_new_tokens tokens.
-
-        Key invariants:
-        ─────────────────────────────────────────────────────────────
-        • n_generated tracks CONFIRMED tokens (never speculative-pending).
-        • WAL written only AFTER a token is confirmed and flushed at end.
-        • stream_cb fires exactly ONCE per confirmed output token (never for
-          unverified speculative proposals).  On spec rejection the callback
-          emits verify_id (the correct token), not the discarded spec_id.
-        • _try_commit_block() uses cache.get_pos() as the authoritative KV
-          write position. It scans ALL boundaries from _last_committed_end
-          to cache.get_pos(), so no boundary is missed regardless of when
-          it is called relative to n_pos.
-        • Engram snapshots parallel KV snapshots for speculative rollback.
-        • Speculative accept: the verification forward (via cur=[spec_id] at
-          top of loop) IS the one and only forward for spec_id.  No second
-          forward in the accept branch — that would advance cache_pos twice.
-        • Prefix cache snapshot is captured immediately after prefill with
-          cache_pos == len(prompt_ids) — never after generation completes.
-        ─────────────────────────────────────────────────────────────
-        """
         if new_prompt or self._cache is None:
             self._cache   = self._make_cache()
             self._miro_mu = 5.0
@@ -434,22 +317,17 @@ class DracoTransformerV1:
         _prefix_hit          = False
         _cached_last_logits: Optional[np.ndarray] = None
         _plen_hit:           int = 0
+        _prefix_engram_snap: Optional[dict] = None
 
         if self._prefix_cache is not None and new_prompt:
             _hit = self._prefix_cache.get(prompt_ids, rope_theta=self._rope_theta)
             if _hit is not None:
-                # ✅ FIX-PREFIX-ENGRAM-SNAPSHOT: get() now returns 4-tuple;
-                # _prefix_engram_snap is None for legacy entries.
                 _snap, _plen_hit, _cached_last_logits, _prefix_engram_snap = _hit
                 cache.restore(_snap)
                 ids         = list(prompt_ids)
                 _prefix_hit = True
                 if debug:
                     logger.debug("[PrefixCache] HIT — skipped %d tokens", _plen_hit)
-            else:
-                _prefix_engram_snap = None
-        else:
-            _prefix_engram_snap = None
 
         mu  = self._miro_mu
         tau = 5.0
@@ -458,7 +336,6 @@ class DracoTransformerV1:
         pos:  Dict[int, int] = {}
         n_pos = 0
 
-        # Speculative state
         spec_pending:      Optional[int]        = None
         spec_pending_conf: float                = 0.0
         spec_snap:         Optional[dict]       = None
@@ -466,8 +343,8 @@ class DracoTransformerV1:
         pre_spec_logits:   Optional[np.ndarray] = None
         mu_pre_verify:     float                = mu
 
-        l2:               Optional[np.ndarray] = None
-        last_logits:      Optional[np.ndarray] = None
+        l2:          Optional[np.ndarray] = None
+        last_logits: Optional[np.ndarray] = None
 
         n_generated  = 0
         current_temp = temp
@@ -483,74 +360,56 @@ class DracoTransformerV1:
         if use_speculative and self._spec_tracker.suggest_disable:
             use_speculative = False
             if debug:
-                logger.debug(
-                    "[speculative] auto-disabled at session start "
-                    "(accept_ema=%.2f)", self._spec_tracker.accept_rate)
+                logger.debug("[speculative] auto-disabled (accept_ema=%.2f)",
+                             self._spec_tracker.accept_rate)
 
         if profiler is not None:
             profiler.start_session()
 
-        # Allocate tree decoder once per generate() call
         _tree_dec: Optional[SpeculativeTreeDecoder] = (
             SpeculativeTreeDecoder(
-                self,
-                tree_width=spec_tree_width,
-                tree_depth=spec_tree_depth,
-                thresh=SPEC_THRESH,
+                self, tree_width=spec_tree_width,
+                tree_depth=spec_tree_depth, thresh=SPEC_THRESH,
             ) if use_speculative_tree else None
         )
 
         # ── Prefill setup ────────────────────────────────────────────
-        # _in_prefill: True while processing the initial prompt batch.
-        # Replaces the fragile "cur is ids" identity check so partial
-        # prefix-cache-hit suffixes are also correctly tracked.
         _in_prefill = False
 
         if _prefix_hit:
             if _plen_hit == len(prompt_ids) and _cached_last_logits is not None:
-                # ── Full hit + cached logits ─────────────────────────────
+                # Full hit + cached logits — no forward needed
                 for _idx, _tid in enumerate(prompt_ids):
                     freq[_tid] = freq.get(_tid, 0) + 1
                     pos[_tid]  = _idx
                 n_pos = len(prompt_ids)
                 cur   = []
-                if (self._engram_cache is not None
-                        and _prefix_engram_snap is not None):
+                if self._engram_cache is not None and _prefix_engram_snap is not None:
                     self._engram_cache.restore(_prefix_engram_snap)
                     if debug:
-                        logger.debug(
-                            "[PrefixCache] Engram restored from prefix snapshot "
-                            "(blocks=%d)", _prefix_engram_snap.get("_n_blocks", 0))
+                        logger.debug("[PrefixCache] Engram restored (blocks=%d)",
+                                     _prefix_engram_snap.get("_n_blocks", 0))
 
             elif _plen_hit == len(prompt_ids):
-                # ── Full hit but no cached logits ────────────────────────
-                # ✅ FIX-FULL-HIT-NO-LOGITS-CACHE-POS: the restored snapshot
-                # has cache_pos == len(prompt_ids).  We need to re-forward the
-                # last prompt token to get fresh logits, but doing so on the
-                # already-restored cache would advance cache_pos to
-                # len(prompt_ids)+1.  Fix: temporarily rewind cache_pos by 1
-                # before the re-forward so the token lands at the correct slot.
+                # ✅ FIX-FULL-HIT-NO-LOGITS-CACHE-POS: snapshot stored with
+                # cache_pos == len(prompt_ids).  Re-forwarding prompt_ids[-1]
+                # would advance it to len(prompt)+1.  Rewind by 1 first.
                 for _idx, _tid in enumerate(prompt_ids):
                     freq[_tid] = freq.get(_tid, 0) + 1
                     pos[_tid]  = _idx
                 n_pos = len(prompt_ids)
-                # Step cache_pos back one position so the re-forward of
-                # prompt_ids[-1] writes into slot (len(prompt)-1) and leaves
-                # cache_pos == len(prompt_ids) after the write.
-                cache._cache_pos[0] = max(0, cache._cache_pos[0] - 1)
+                cache._cache_pos[0] = max(0, int(cache._cache_pos[0]) - 1)
                 cur   = [prompt_ids[-1]]
                 _in_prefill = False
-                if (self._engram_cache is not None
-                        and _prefix_engram_snap is not None):
+                if self._engram_cache is not None and _prefix_engram_snap is not None:
                     self._engram_cache.restore(_prefix_engram_snap)
                     if debug:
-                        logger.debug(
-                            "[PrefixCache] Engram restored from prefix snapshot "
-                            "(no-logits path, blocks=%d)",
-                            _prefix_engram_snap.get("_n_blocks", 0))
+                        logger.debug("[PrefixCache] Engram restored no-logits "
+                                     "(blocks=%d)",
+                                     _prefix_engram_snap.get("_n_blocks", 0))
 
             else:
-                # ── Partial hit ──────────────────────────────────────────
+                # Partial hit
                 cur = ids[_plen_hit:] if len(ids) > _plen_hit else [ids[-1]]
                 for _idx, _tid in enumerate(prompt_ids[:_plen_hit]):
                     freq[_tid] = freq.get(_tid, 0) + 1
@@ -563,28 +422,37 @@ class DracoTransformerV1:
 
         _prompt_last_logits: Optional[np.ndarray] = None
 
-        # ── Engram helpers ───────────────────────────────────────────
+        # ── Inner helpers ────────────────────────────────────────────
 
         def _try_commit_block():
             """
-            Scans ALL block boundaries from _last_committed_end up to
-            cache.get_pos() and commits each completed block into the Engram.
-            Uses cache.get_pos() as the authoritative KV write position.
+            Commit KV blocks that have slid out of the window into EngramCache.
+
+            ✅ FIX-COMMIT-BLOCK-LOCKLESS: the eviction-skip path previously
+            wrote _last_committed_end directly to the EngramCache without
+            holding the cache's internal lock, bypassing the TOCTOU-safe
+            _add_block() gate introduced to fix concurrent duplicate commits.
+            The write is now routed through advance_committed_end() which
+            acquires the lock atomically, ensuring _last_committed_end is
+            always updated under the same lock that guards block insertion.
             """
             if self._engram_cache is None:
                 return
             bs          = self._engram_cache.block_size
             current_pos = cache.get_pos()
             last_end    = self._engram_cache._last_committed_end
+            boundary    = (last_end // bs + 1) * bs
 
-            boundary = (last_end // bs + 1) * bs
             while boundary <= current_pos:
                 block_start = boundary - bs
                 block_end   = boundary
-
                 oldest_accessible = max(0, current_pos - cache.window)
+
                 if block_start < oldest_accessible:
-                    self._engram_cache._last_committed_end = block_end
+                    # Block has already been evicted from the sliding window;
+                    # advance the committed pointer without compressing.
+                    # ✅ FIX-COMMIT-BLOCK-LOCKLESS: use the lock-protected API.
+                    self._engram_cache.advance_committed_end(block_end)
                     boundary += bs
                     continue
 
@@ -596,7 +464,6 @@ class DracoTransformerV1:
                     K_full, V_full = cache.get(li)
                     total_len  = K_full.shape[2]
                     oldest_pos = current_pos - total_len
-
                     offset     = block_start - oldest_pos
                     end_offset = offset + bs
 
@@ -610,17 +477,15 @@ class DracoTransformerV1:
                 if not valid:
                     break
 
-                layer_keys   = np.stack(layer_keys_list,   axis=0)
-                layer_values = np.stack(layer_values_list, axis=0)
-
-                self._engram_cache.commit_block(block_start, block_end,
-                                                layer_keys, layer_values)
+                self._engram_cache.commit_block(
+                    block_start, block_end,
+                    np.stack(layer_keys_list,   axis=0),
+                    np.stack(layer_values_list, axis=0),
+                )
                 boundary += bs
 
         def _engram_snapshot() -> Optional[dict]:
-            if self._engram_cache is not None:
-                return self._engram_cache.snapshot()
-            return None
+            return self._engram_cache.snapshot() if self._engram_cache else None
 
         def _engram_restore(snap: Optional[dict]):
             if self._engram_cache is not None and snap is not None:
@@ -652,27 +517,41 @@ class DracoTransformerV1:
             conf = float(np.exp(np.clip(lg[nid] - lg.max(), -50, 0)))
             return nid, conf
 
-        def _apply_rep_penalty(lg: np.ndarray, ref_n_pos: Optional[int] = None) -> np.ndarray:
-            lg      = lg.copy()
-            _n_pos  = ref_n_pos if ref_n_pos is not None else n_pos
+        def _apply_rep_penalty(lg: np.ndarray,
+                               ref_n_pos: Optional[int] = None) -> np.ndarray:
+            lg     = lg.copy()
+            _n_pos = ref_n_pos if ref_n_pos is not None else n_pos
             for tid, cnt in freq.items():
                 if cnt > 0:
                     dist = _n_pos - pos.get(tid, 0) + 1
                     lg[tid] -= rep_alpha * math.log(1 + cnt) / dist
             return lg
 
+        def _apply_rep_penalty_reject(lg: np.ndarray, ref_n_pos: int,
+                                      pending: int) -> np.ndarray:
+            """
+            ✅ FIX-REP-PENALTY-REJECT-SPEC
+            freq[pending] is inflated +1 from the proposal that is being
+            undone.  Use actual_cnt = cnt - 1 for the spec token so the
+            penalty reflects the true pre-proposal history.
+            """
+            lg = lg.copy()
+            for tid, cnt in freq.items():
+                actual_cnt = (cnt - 1) if tid == pending else cnt
+                if actual_cnt > 0:
+                    dist = ref_n_pos - pos.get(tid, 0) + 1
+                    lg[tid] -= rep_alpha * math.log(1 + actual_cnt) / dist
+            return lg
+
         def _wal_append(tid: int):
             if wal is not None:
                 wal.append(tid)
 
-        # ── Helper: store prompt in prefix cache after prefill ────────
         def _maybe_store_prefix_cache():
             """
-            Capture a full snapshot immediately after prefill so that
-            cache_pos == len(prompt_ids) in the stored entry.
-            Only called once, right after the prefill forward completes.
-            Called only when _prefix_cache is set and this is a fresh prompt
-            (not a prefix-cache hit).
+            ✅ FIX-PREFIX-CACHE-SNAP-TIMING + FIX-PREFIX-CACHE-SILENT-SWALLOW
+            Capture snapshot immediately after prefill (cache_pos == len(prompt)).
+            Log errors instead of silently discarding them.
             """
             if (
                 self._prefix_cache is None
@@ -694,8 +573,8 @@ class DracoTransformerV1:
                     rope_theta=self._rope_theta,
                     engram_snap=_engram_snap_store,
                 )
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("[PrefixCache] store failed: %s", _exc)
 
         # ── Main generation loop ─────────────────────────────────────
         while n_generated < max_new_tokens:
@@ -708,15 +587,16 @@ class DracoTransformerV1:
                 and spec_pending is None
                 and n_generated % _SPEC_RECHECK_INTERVAL == 0
                 and n_generated > 0
+                and not self._spec_tracker.suggest_disable
             ):
-                if not self._spec_tracker.suggest_disable:
-                    use_speculative = True
-                    if debug:
-                        logger.debug("[speculative] re-enabled at token %d", n_generated)
+                use_speculative = True
+                if debug:
+                    logger.debug("[speculative] re-enabled at token %d",
+                                 n_generated)
 
             _fwd_t0 = time.perf_counter()
 
-            # ── Forward (or reuse cached logits) ─────────────────────
+            # ── Forward ──────────────────────────────────────────────
             if not cur and _cached_last_logits is not None:
                 last_logits = _cached_last_logits.copy().astype(np.float64)
                 _cached_last_logits = None
@@ -745,12 +625,8 @@ class DracoTransformerV1:
                     _try_commit_block()
                     cur = []
                     _in_prefill = False
-                    # ✅ FIX-PREFIX-CACHE-SNAP-TIMING: capture the prefix-cache
-                    # snapshot HERE, immediately after prefill completes, while
-                    # cache_pos == len(prompt_ids).  Capturing it at the end of
-                    # generate() (as done previously) stored cache_pos =
-                    # len(prompt) + n_generated, making every subsequent restore
-                    # land at the wrong position.
+                    # ✅ FIX-PREFIX-CACHE-SNAP-TIMING: snapshot here,
+                    # cache_pos == len(prompt_ids) at this point.
                     _maybe_store_prefix_cache()
                     continue
                 else:
@@ -778,35 +654,17 @@ class DracoTransformerV1:
 
                 if verify_id == spec_pending:
                     # ════════ ACCEPTED ════════════════════════════════
-                    # ✅ FIX-SPEC-ACCEPT-DOUBLE-FORWARD:
-                    # The verification forward (cur=[spec_id] at top of loop)
-                    # already wrote spec_id's KV and produced valid last_logits/l2.
-                    # Do NOT call forward([spec_pending]) again here — that would
-                    # advance cache_pos a second time, putting the next token's KV
-                    # one slot ahead of the actual sequence position.
-                    # last_logits and l2 are already fresh from the verification forward.
                     _wal_append(spec_pending)
                     if profiler:
                         profiler.record_spec_accept()
                     self._spec_tracker.record_accept()
-
-                    # ✅ FIX-STREAMCB-DOUBLE-FIRE: emit the confirmed spec token
-                    # here (at acceptance), not at proposal time.  Emitting at
-                    # proposal was premature — if the spec token was later rejected
-                    # the caller received a wrong token followed by the corrected
-                    # one.  Now stream_cb fires exactly once per confirmed token.
                     if stream_cb:
                         stream_cb(spec_pending, spec_pending_conf)
 
-                    # Record confirmed position for spec_pending.
-                    # n_pos was already incremented when spec was proposed,
-                    # so the confirmed position is n_pos - 1.
                     pos[spec_pending] = n_pos - 1
                     engram_snap = None
-
                     spec_pending = spec_snap = pre_spec_logits = None
                     spec_pending_conf = 0.0
-
                     _try_commit_block()
 
                     nid, conf = _sample(last_logits)
@@ -836,8 +694,8 @@ class DracoTransformerV1:
                     last_logits_new = _apply_rep_penalty(last_logits_new)
 
                     if debug:
-                        self._sanity_checks(last_logits_new, f"accept_fwd step={n_generated}")
-
+                        self._sanity_checks(last_logits_new,
+                                            f"accept_fwd step={n_generated}")
                     _try_commit_block()
 
                     if use_speculative and l2_new is not None:
@@ -851,10 +709,6 @@ class DracoTransformerV1:
                             pos[spec_id]  = n_pos
                             n_pos    += 1
                             n_generated += 1
-                            # ✅ FIX-STREAMCB-DOUBLE-FIRE: do NOT emit stream_cb
-                            # here.  The spec token is still unverified; emitting
-                            # now would cause a double-fire if later rejected.
-                            # stream_cb fires at accept time via spec_pending_conf.
                             spec_pending_conf = spec_conf
                             if n_generated >= max_new_tokens:
                                 break
@@ -880,13 +734,9 @@ class DracoTransformerV1:
                     if pre_spec_logits is not None:
                         mu = mu_pre_verify
                         _ref_pos = n_pos - 1
-                        last_logits = pre_spec_logits.copy()
-                        for tid, cnt in freq.items():
-                            if tid == spec_pending:
-                                continue
-                            if cnt > 0:
-                                dist = _ref_pos - pos.get(tid, 0) + 1
-                                last_logits[tid] -= rep_alpha * math.log(1 + cnt) / dist
+                        # ✅ FIX-REP-PENALTY-REJECT-SPEC
+                        last_logits = _apply_rep_penalty_reject(
+                            pre_spec_logits, _ref_pos, spec_pending)
                         verify_id, _ = _sample(last_logits)
 
                     if ids and ids[-1] == spec_pending:
@@ -916,7 +766,7 @@ class DracoTransformerV1:
                     cur = [ids[-1]]
                     continue
 
-            # ── Normal (non-speculative) sample step ──────────────────
+            # ── Normal sample step ────────────────────────────────────
             nid, conf = _sample(last_logits)
             ids.append(nid)
             freq[nid] = freq.get(nid, 0) + 1
@@ -947,8 +797,7 @@ class DracoTransformerV1:
                     _eos_set, mu, use_mirostat,
                     temp=current_temp, top_p=top_p, min_p=min_p,
                     intent_boost=intent_boost, intent_bias=intent_bias,
-                    add_noise=add_noise,
-                    max_tokens=_remaining,
+                    add_noise=add_noise, max_tokens=_remaining,
                 )
 
                 if _tree_accepted:
@@ -968,9 +817,7 @@ class DracoTransformerV1:
                         if _t in _eos_set:
                             _eos_hit = True
                             break
-
                     _try_commit_block()
-
                     if _eos_hit or n_generated >= max_new_tokens:
                         break
                     cur = []
@@ -988,10 +835,6 @@ class DracoTransformerV1:
                     pos[spec_id]  = n_pos
                     n_pos    += 1
                     n_generated += 1
-                    # ✅ FIX-STREAMCB-DOUBLE-FIRE: do NOT emit stream_cb here.
-                    # The spec token is still unverified; emitting now causes a
-                    # double-fire on rejection (wrong token, then correct token).
-                    # stream_cb fires once at confirmation via spec_pending_conf.
                     spec_pending_conf = spec_conf
                     if n_generated >= max_new_tokens:
                         break
@@ -999,7 +842,7 @@ class DracoTransformerV1:
 
             cur = [ids[-1]]
 
-        # ── Cleanup: remove unverified speculative token ──────────────
+        # ── Cleanup ───────────────────────────────────────────────────
         if spec_pending is not None:
             if spec_snap is not None:
                 cache.restore(spec_snap)
@@ -1013,9 +856,7 @@ class DracoTransformerV1:
         self._miro_mu = mu
         result = ids[len(prompt_ids):]
 
-        # ✅ FIX-WAL-FINAL-FLUSH: flush WAL unconditionally so the tail
-        # tokens (< WAL_FLUSH_INTERVAL since last auto-flush) are durable
-        # even if the caller does not close the WAL via context manager.
+        # ✅ FIX-WAL-FINAL-FLUSH
         if wal is not None:
             wal.flush()
 
@@ -1034,7 +875,6 @@ class DracoTransformerV1:
                 correction_scale=correction_scale,
             )
 
-    # ── Quantisation ──────────────────────────────────────────────────
     def quantize_weights(self, quant: Optional[str] = None, group_size: int = 128):
         mode = quant or self._quant_mode
         if mode is None:
@@ -1044,7 +884,6 @@ class DracoTransformerV1:
         quantize_model_weights(self, mode, group_size)
         self._lm_head_f32 = None
 
-    # ── Dtype cast ────────────────────────────────────────────────────
     def cast_weights(self, dtype: np.dtype):
         dtype = np.dtype(dtype)
         self._dtype       = dtype
@@ -1070,7 +909,6 @@ class DracoTransformerV1:
                 blk.moe.W_router = blk.moe.W_router.astype(dtype)
             blk.moe._invalidate_stacked()
 
-    # ── Save / Load ───────────────────────────────────────────────────
     def save_weights(self, path: str):
         os.makedirs(path, exist_ok=True)
         np.save(os.path.join(path, "embedding.npy"), self.embedding)
@@ -1112,8 +950,8 @@ class DracoTransformerV1:
                     setattr(exp, attr, np.load(f"{pfx}_expert{e}_{attr}.npy"))
         return model
 
-    def load_external_weights(self, state_dict: dict, from_checkpoint: bool = True):
-        """Load weights from an external HuggingFace-style state dict."""
+    def load_external_weights(self, state_dict: dict,
+                              from_checkpoint: bool = True):
         expert_accum: Dict[int, Dict[str, list]] = {
             e: {} for e in range(self.n_experts)}
         shared_accum: Dict[str, list] = {}
@@ -1125,29 +963,22 @@ class DracoTransformerV1:
                 accum_dict[key][0] += arr.astype(np.float32)
                 accum_dict[key][1] += 1
 
-        proj_attr_map = {
-            "gate_proj": "W_g",
-            "up_proj":   "W_u",
-            "down_proj": "W_d",
-        }
+        proj_attr_map = {"gate_proj": "W_g", "up_proj": "W_u", "down_proj": "W_d"}
 
         for key, val in state_dict.items():
-            arr = val if isinstance(val, np.ndarray) else np.array(
-                val, dtype=np.float32)
+            arr = val if isinstance(val, np.ndarray) else np.array(val, dtype=np.float32)
 
             if "embed_tokens" in key:
-                self.embedding    = arr.astype(np.float32)
-                self.lm_head      = self.embedding
-                self.mtp.lm_head  = self.lm_head
+                self.embedding = arr.astype(np.float32)
+                self.lm_head = self.embedding
+                self.mtp.lm_head = self.lm_head
                 self._lm_head_f32 = None
                 continue
-
             if "lm_head" in key and "embed" not in key:
-                self.lm_head      = arr.astype(np.float32)
-                self.mtp.lm_head  = self.lm_head
+                self.lm_head = arr.astype(np.float32)
+                self.mtp.lm_head = self.lm_head
                 self._lm_head_f32 = None
                 continue
-
             if "model.norm.weight" in key:
                 self.norm_f = arr.astype(np.float32)
                 continue
@@ -1164,8 +995,7 @@ class DracoTransformerV1:
                 if "post_attention_layernorm" in key: block.norm2    = arr.astype(np.float32)
 
                 m_expert = _re.search(
-                    r"layers\.\d+\.mlp\.experts\.(\d+)\."
-                    r"(gate_proj|up_proj|down_proj)", key)
+                    r"layers\.\d+\.mlp\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)", key)
                 if m_expert:
                     eid  = int(m_expert.group(1)) % self.n_experts
                     attr = proj_attr_map[m_expert.group(2)]
@@ -1185,7 +1015,6 @@ class DracoTransformerV1:
                 avg = (total / count).astype(np.float32)
                 for blk in self.blocks:
                     setattr(blk.moe.experts[e], attr, avg)
-
         for attr, (total, count) in shared_accum.items():
             avg = (total / count).astype(np.float32)
             for blk in self.blocks:
@@ -1201,20 +1030,11 @@ class DracoTransformerV1:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TransformerBridge — NumPy ↔ llama.cpp
+# TransformerBridge
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TransformerBridge:
-    """
-    Production inference bridge: NumPy ↔ llama.cpp.
-
-    Selects backend automatically:
-      • GGUF file present  → llama.cpp (faster, quantised)
-      • No GGUF            → NumPy engine (always available)
-
-    FIX-LLAMA-DUPLICATE-KWARGS: top_p / temperature appear ONLY inside
-    gen_kwargs; they are NOT re-passed to create_completion.
-    """
+    """Production inference bridge: NumPy ↔ llama.cpp."""
 
     BACKEND_NUMPY = "numpy"
     BACKEND_LLAMA = "llama.cpp"
@@ -1312,16 +1132,16 @@ class TransformerBridge:
 
     def generate(
         self,
-        prompt_ids:     List[int],
-        max_new_tokens: int   = 256,
-        temp:           float = DEFAULT_TEMP,
-        top_p:          float = DEFAULT_TOP_P,
-        min_p:          float = 0.0,
-        eos_id:         int   = 151645,
-        new_prompt:     bool  = True,
-        use_mirostat:   bool  = True,
-        use_speculative: bool = True,
-        stream_cb:      Optional[Callable[[int, float], None]] = None,
+        prompt_ids:      List[int],
+        max_new_tokens:  int   = 256,
+        temp:            float = DEFAULT_TEMP,
+        top_p:           float = DEFAULT_TOP_P,
+        min_p:           float = 0.0,
+        eos_id:          int   = 151645,
+        new_prompt:      bool  = True,
+        use_mirostat:    bool  = True,
+        use_speculative: bool  = True,
+        stream_cb:       Optional[Callable[[int, float], None]] = None,
     ) -> List[int]:
         if self._backend == self.BACKEND_NUMPY:
             return self._generate_numpy(
@@ -1330,10 +1150,8 @@ class TransformerBridge:
         return self._generate_llama(
             prompt_ids, max_new_tokens, temp, top_p, min_p, eos_id, stream_cb)
 
-    def _generate_numpy(
-        self, prompt_ids, max_new_tokens, temp, top_p, min_p,
-        eos_id, new_prompt, use_mirostat, use_speculative, stream_cb,
-    ):
+    def _generate_numpy(self, prompt_ids, max_new_tokens, temp, top_p, min_p,
+                        eos_id, new_prompt, use_mirostat, use_speculative, stream_cb):
         return self._numpy_model.generate(
             prompt_ids,
             max_new_tokens=max_new_tokens,
@@ -1345,20 +1163,13 @@ class TransformerBridge:
             intent_bias=self._intent_bias,
         )
 
-    def _generate_llama(
-        self, prompt_ids, max_new_tokens, temp, top_p, min_p, eos_id, stream_cb,
-    ) -> List[int]:
-        """
-        llama.cpp backend.
-        FIX-LLAMA-DUPLICATE-KWARGS: sampling params appear ONLY in gen_kwargs.
-        FIX-LLAMA-TOKEN-LIST: llama-cpp-python's generate() accepts a token list.
-        """
+    def _generate_llama(self, prompt_ids, max_new_tokens, temp, top_p, min_p,
+                        eos_id, stream_cb) -> List[int]:
         if self._llama is None:
             self._load_llama()
 
         logit_bias = self._boost_to_logit_bias()
         output_ids: List[int] = []
-
         gen_kwargs: dict = dict(
             top_k=50, top_p=top_p, min_p=min_p,
             temperature=temp, repeat_penalty=1.1,
@@ -1375,18 +1186,14 @@ class TransformerBridge:
                 if stream_cb:
                     stream_cb(tok, 1.0)
         except TypeError:
-            logger.error(
-                "[DracoAI] llama.cpp streaming generate() failed (TypeError). "
-                "Upgrade: pip install -U llama-cpp-python")
+            logger.error("[DracoAI] llama.cpp generate() failed. "
+                         "Upgrade: pip install -U llama-cpp-python")
             raise RuntimeError(
-                "llama.cpp streaming generate() failed.  "
-                "Upgrade llama-cpp-python or use the NumPy backend."
-            )
+                "llama.cpp streaming generate() failed. "
+                "Upgrade llama-cpp-python or use the NumPy backend.")
 
         return output_ids
 
     def __repr__(self) -> str:
-        return (
-            f"TransformerBridge(backend={self._backend!r}, "
-            f"gguf={self._gguf_path!r})"
-        )
+        return (f"TransformerBridge(backend={self._backend!r}, "
+                f"gguf={self._gguf_path!r})")

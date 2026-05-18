@@ -35,6 +35,16 @@ FIXES (this revision):
      wasting work and obscuring the true interface.  Callers updated to drop
      those four arguments.  The public return value and all other parameters
      are unchanged.
+  ✅ FIX-REPLAY-ADD-NOISE      : replay in SpeculativeTreeDecoder._search()
+     now forces add_noise=False.  When add_noise=True the MoE router adds
+     Gumbel noise, making each forward() call stochastic.  Replaying the
+     winning chain with noise produces logits that differ from the original
+     verify pass, so best_logits (returned to the caller as the starting
+     distribution for the next token) is drawn from a different distribution
+     than the one the user configured.  Forcing add_noise=False during replay
+     makes the reconstructed logits deterministic and consistent with the
+     accept/reject decision already made.  The original forward passes during
+     tree search still respect the caller's add_noise setting.
 """
 from __future__ import annotations
 import math
@@ -156,6 +166,8 @@ class SpeculativeTreeDecoder:
       KV cache entry count always matches what the generate loop commits.
     • best_logits is updated during replay to reflect the logits of the last
       actually-replayed token (FIX-TREE-LOGITS-STALE-AFTER-TRUNCATION).
+    • Replay uses add_noise=False to produce deterministic logits consistent
+      with the accept/reject decision (FIX-REPLAY-ADD-NOISE).
     ─────────────────────────────────────────────────────────────────────
     """
 
@@ -200,6 +212,10 @@ class SpeculativeTreeDecoder:
         final_logits is from the LAST replayed token — guarantees freshness
         whether or not truncation occurred (FIX-TREE-LOGITS-STALE-AFTER-TRUNCATION).
         If nothing is accepted, cache state is restored to root_snap.
+
+        ✅ FIX-REPLAY-ADD-NOISE: replay always uses add_noise=False so the
+        reconstructed logits are deterministic and match the distribution
+        implied by the accept/reject decision already made during search.
         """
         model = self.model
 
@@ -242,6 +258,7 @@ class SpeculativeTreeDecoder:
                 cache._snap_escalate_to_full(branch_snap)
 
                 # Always forward spec_id so its KV is written into cache.
+                # Use the caller's add_noise setting for the search phase.
                 l1_c, l2_c, _ = model.forward(
                     [spec_id], cache,
                     intent_boost=intent_boost,
@@ -286,6 +303,8 @@ class SpeculativeTreeDecoder:
 
             # Replay the (possibly truncated) winning chain on the restored
             # cache so KV exactly matches the committed token sequence.
+            # ✅ FIX-REPLAY-ADD-NOISE: add_noise=False ensures deterministic
+            # logits consistent with the accept/reject decision already made.
             # ✅ FIX-TREE-LOGITS-STALE-AFTER-TRUNCATION: capture l1 from the
             # replay loop so best_logits reflects the LAST replayed token.
             if best_accepted:
@@ -295,7 +314,7 @@ class SpeculativeTreeDecoder:
                     l1_r, replay_l2, _ = model.forward(
                         [tok], cache,
                         intent_boost=intent_boost,
-                        add_noise=add_noise,
+                        add_noise=False,       # ✅ FIX-REPLAY-ADD-NOISE
                         intent_bias=intent_bias,
                     )
                     replay_logits = np.clip(l1_r[0, -1].astype(np.float64), -50.0, 50.0)
