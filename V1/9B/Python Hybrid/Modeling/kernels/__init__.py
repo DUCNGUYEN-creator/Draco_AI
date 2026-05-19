@@ -3,7 +3,7 @@
 """
 Kernel registry — optional hardware-accelerated implementations.
 
-ops/tensor_ops.py queries this registry via get_kernel().
+ops/tensor_ops.py and layers/mlp.py query this registry via get_kernel().
 If a kernel is unavailable (missing package, no GPU), get_kernel()
 returns None and the caller falls back to pure NumPy.
 
@@ -11,6 +11,13 @@ Architecture contract:
   - Kernels accept np.ndarray, return np.ndarray.
   - Kernels have NO knowledge of layers/, runtime/, or kv_cache/.
   - Import failures are silently swallowed — NumPy is always the fallback.
+
+Registered kernels (populated at import time):
+  fused_attention   : Triton scaled-dot-product attention (GPU)
+  fused_swiglu      : Triton/Numba fused SwiGLU MLP (GPU/CPU JIT)
+  int8_matmul       : Triton/Numba INT8 weight-only matmul
+  int4_matmul       : Triton/Numba INT4 weight-only matmul
+  ternary_matmul    : Triton addition-only ternary matmul (NEW)
 """
 from __future__ import annotations
 import logging

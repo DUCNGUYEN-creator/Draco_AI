@@ -25,3 +25,8 @@ def _register_all():
         register_kernel("int4_matmul", triton_int4_matmul)
     except Exception:
         pass
+    try:
+        from .ternary_matmul import triton_ternary_matmul
+        register_kernel("ternary_matmul", triton_ternary_matmul)
+    except Exception:
+        pass
