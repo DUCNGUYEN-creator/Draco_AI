@@ -159,8 +159,12 @@ class DracoTransformerV1:
         self._spec_tracker = SpeculativeDecoder()
 
     def _make_cache(self, max_batch: int = 1) -> KVCache:
+        # Use MLA latent_dim if MLA is attached to any block (all blocks share same MLA config)
+        kv_head_dim = self.head_dim
+        if self.blocks and self.blocks[0]._mla is not None:
+            kv_head_dim = self.blocks[0]._mla.latent_dim
         return KVCache(
-            self.n_layers, self.n_kv_heads, self.head_dim,
+            self.n_layers, self.n_kv_heads, kv_head_dim,
             window=self.window, sink=SINK_TOKENS,
             use_memmap=self._memmap_cache, memmap_dir=self._memmap_dir,
             max_batch=max_batch,
@@ -180,6 +184,13 @@ class DracoTransformerV1:
         x   = self.embedding[ids][None]
         aux_list: List[Dict] = []
 
+        # Capture the RoPE offset ONCE before any layer's update() advances
+        # _cache_pos.  All layers in this forward pass must use the same offset
+        # so that positional encoding is consistent regardless of layer index.
+        # Without this fix: layer i uses offset = i * seq (wrong),
+        # with this fix: all layers use offset = tokens_seen_before_this_forward.
+        rope_offset = cache.get_pos(batch_idx)
+
         for block in self.blocks:
             x, aux = block.forward(
                 x, cache,
@@ -189,6 +200,7 @@ class DracoTransformerV1:
                 batch_idx=batch_idx,
                 pool=self._tensor_pool,
                 engram=self._engram_cache,
+                rope_offset=rope_offset,
             )
             aux_list.append(aux)
 

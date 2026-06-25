@@ -94,7 +94,8 @@ def _ternarize_model_weights(model: "DracoTransformerV1") -> None:
                     continue
                 if not isinstance(W, np.ndarray):
                     continue
-                tl = TernaryLinear.from_float(W)
+                # Transpose: ExpertFFN stores (in, out); TernaryLinear expects (out, in)
+                tl = TernaryLinear.from_float(W.T)
                 setattr(exp, attr, tl)
             # Mark expert as ternary so forward dispatches to addition-only path
             exp._ternary = True

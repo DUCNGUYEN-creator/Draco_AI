@@ -57,10 +57,11 @@ def kv_quantize(
     q     : (..., head_dim) int8    — quantized values
     scale : (..., 1)        float16 — per-vector scale
     """
-    scale = (np.abs(x).max(axis=-1, keepdims=True) / 127.0 + _EPS
-             ).astype(np.float16)
+    scale_f32 = (np.abs(x).max(axis=-1, keepdims=True) / 127.0 + float(_EPS)
+                 ).astype(np.float32)
+    scale = scale_f32.astype(np.float16)
     q = np.clip(
-        np.round(x / scale.astype(np.float32)), -127, 127
+        np.round(x / scale_f32), -127, 127
     ).astype(np.int8)
     return q, scale
 
@@ -95,9 +96,10 @@ def kv_quantize_batch(
     scale : (n_layers, batch, n_kv_heads, window, 1) float16
     """
     x32   = KV.astype(np.float32)
-    scale = (np.abs(x32).max(axis=-1, keepdims=True) / 127.0 + _EPS
-             ).astype(np.float16)
-    q = np.clip(np.round(x32 / scale.astype(np.float32)), -127, 127).astype(np.int8)
+    scale_f32 = (np.abs(x32).max(axis=-1, keepdims=True) / 127.0 + float(_EPS)
+                 ).astype(np.float32)
+    scale = scale_f32.astype(np.float16)
+    q = np.clip(np.round(x32 / scale_f32), -127, 127).astype(np.int8)
     return q, scale
 
 

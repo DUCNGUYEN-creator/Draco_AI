@@ -4,5 +4,16 @@ from .kv_cache     import KVCache
 from .snapshot     import SnapshotStack
 from .prefix_cache import PrefixCache
 from .engram_cache import EngramCache, EngramBlock
+from .kv_quant     import (kv_quantize, kv_dequantize,
+                            kv_quantize_batch, kv_dequantize_batch,
+                            kv_memory_bytes)
 
-__all__ = ["KVCache", "SnapshotStack", "PrefixCache", "EngramCache", "EngramBlock"]
+__all__ = [
+    "KVCache",
+    "SnapshotStack",
+    "PrefixCache",
+    "EngramCache", "EngramBlock",
+    "kv_quantize", "kv_dequantize",
+    "kv_quantize_batch", "kv_dequantize_batch",
+    "kv_memory_bytes",
+]

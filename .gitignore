@@ -25,3 +25,7 @@ storage/
 # Exclude continue folder
 continue/
 **/continue/
+
+#Chưa xong
+tokenizer/
+**/tokenizer/

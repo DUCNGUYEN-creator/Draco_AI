@@ -75,14 +75,19 @@ class ExpertFFN:
 
         Safe to call multiple times (idempotent — skips already-ternary
         weights).  Returns self for chaining.
+
+        Note on transposition: ExpertFFN stores weights in (in, out) format
+        for direct numpy @ multiplication.  TernaryLinear.from_float expects
+        (out, in) format and performs y = x @ W.T internally.  Therefore we
+        transpose before passing to from_float so the shapes are consistent.
         """
         from ..quant.ternary_linear import TernaryLinear
         for attr in ("W_g", "W_u", "W_d"):
             W = getattr(self, attr)
             if not isinstance(W, TernaryLinear):
-                setattr(self, attr, TernaryLinear.from_float(
-                    W if isinstance(W, np.ndarray) else W.dequantize()
-                ))
+                W_arr = W if isinstance(W, np.ndarray) else W.dequantize()
+                # Transpose: (in, out) -> (out, in) for TernaryLinear storage
+                setattr(self, attr, TernaryLinear.from_float(W_arr.T))
         self._ternary = True
         return self
 

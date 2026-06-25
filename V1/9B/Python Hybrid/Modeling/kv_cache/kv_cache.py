@@ -165,10 +165,12 @@ class KVCache:
         arr: np.ndarray,  # (..., head_dim) float
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Symmetric per-vector INT8 quantisation. Returns (int8, scale_f16)."""
-        scale = (np.abs(arr).max(axis=-1, keepdims=True) / 127.0 + 1e-9
-                 ).astype(np.float16)
-        q = np.clip(np.round(arr / scale.astype(np.float32)), -127, 127
-                    ).astype(np.int8)
+        # Compute scale in float32 to avoid float16 underflow of the 1e-5 eps.
+        # float16 min positive normal ~6e-5, so 1e-9 in float16 = 0 → divide-by-zero.
+        abs_max = np.abs(arr).max(axis=-1, keepdims=True)
+        scale_f32 = (abs_max / 127.0 + 1e-5).astype(np.float32)  # safe non-zero
+        scale = scale_f32.astype(np.float16)
+        q = np.clip(np.round(arr / scale_f32), -127, 127).astype(np.int8)
         return q, scale
 
     @staticmethod
@@ -190,6 +192,11 @@ class KVCache:
         """
         Write K_new / V_new into the ring buffer for batch_idx.
         Advances _cache_pos by seq tokens.
+
+        Note on multi-layer usage: _cache_pos advances once per update() call.
+        The caller (DracoTransformerV1.forward) captures the starting position
+        once at the top of the forward pass and passes it as rope_offset to
+        all attention layers so they all use the same positional encoding offset.
         """
         seq = K_new.shape[2]
         pos = int(self._cache_pos[batch_idx])
@@ -298,22 +305,24 @@ class KVCache:
 
         if self._use_kv_quant:
             # Quantise each head independently (vectorised over seq)
-            # K_f[0]: (n_kv_heads, seq, head_dim)  → iterate seq
+            # K_f[0]: (n_kv_heads, seq, head_dim)
             K_t = K_f[0].transpose(1, 0, 2)  # (seq, n_kv_heads, head_dim)
             V_t = V_f[0].transpose(1, 0, 2)
-            scale_K = (np.abs(K_t).max(axis=-1, keepdims=True) / 127.0 + 1e-9
-                       ).astype(np.float16)  # (seq, n_kv_heads, 1)
-            scale_V = (np.abs(V_t).max(axis=-1, keepdims=True) / 127.0 + 1e-9
-                       ).astype(np.float16)
-            K_q = np.clip(np.round(K_t / scale_K.astype(np.float32)), -127, 127
-                          ).astype(np.int8)
-            V_q = np.clip(np.round(V_t / scale_V.astype(np.float32)), -127, 127
-                          ).astype(np.int8)
-            # buf_pos fancy-index: result is (len(buf_pos), n_kv_heads, head_dim)
+            # Compute scales in float32 (1e-5 eps avoids float16 underflow to zero)
+            scale_K_f32 = (np.abs(K_t).max(axis=-1, keepdims=True) / 127.0 + 1e-5
+                           ).astype(np.float32)
+            scale_V_f32 = (np.abs(V_t).max(axis=-1, keepdims=True) / 127.0 + 1e-5
+                           ).astype(np.float32)
+            K_q = np.clip(np.round(K_t / scale_K_f32), -127, 127).astype(np.int8)
+            V_q = np.clip(np.round(V_t / scale_V_f32), -127, 127).astype(np.int8)
+            # NumPy advanced indexing: self._K[l, b, :, buf_pos, :] returns
+            # shape (len(buf_pos), n_kv_heads, head_dim) = (seq, n_kv_heads, head_dim)
+            # K_q already has shape (seq, n_kv_heads, head_dim) -> direct assignment
             self._K[layer_idx, batch_idx, :, buf_pos, :] = K_q
             self._V[layer_idx, batch_idx, :, buf_pos, :] = V_q
-            self._K_scale[layer_idx, batch_idx, :, buf_pos, :] = scale_K
-            self._V_scale[layer_idx, batch_idx, :, buf_pos, :] = scale_V
+            # Store scale as float16 (seq, n_kv_heads, 1) -> direct assignment
+            self._K_scale[layer_idx, batch_idx, :, buf_pos, :] = scale_K_f32.astype(np.float16)
+            self._V_scale[layer_idx, batch_idx, :, buf_pos, :] = scale_V_f32.astype(np.float16)
         else:
             self._K[layer_idx, batch_idx, :, buf_pos, :] = (
                 K_f[0].transpose(1, 0, 2).astype(self.dtype))
@@ -360,15 +369,20 @@ class KVCache:
                 idx          = np.concatenate([sink_slots, ring_slots])
 
                 if self._use_kv_quant:
+                    # Advanced indexing [l,b,:,idx,:] returns (len_idx, n_kv_heads, head_dim)
+                    # Transpose to (n_kv_heads, len_idx, head_dim) then add batch dim
                     K = self._dequant_int8(
                         self._K[layer_idx, batch_idx, :, idx, :],
-                        self._K_scale[layer_idx, batch_idx, :, idx, :])[None]
+                        self._K_scale[layer_idx, batch_idx, :, idx, :]
+                    ).transpose(1, 0, 2)[None]
                     V = self._dequant_int8(
                         self._V[layer_idx, batch_idx, :, idx, :],
-                        self._V_scale[layer_idx, batch_idx, :, idx, :])[None]
+                        self._V_scale[layer_idx, batch_idx, :, idx, :]
+                    ).transpose(1, 0, 2)[None]
                 else:
-                    K = self._K[layer_idx, batch_idx, :, idx, :][None]
-                    V = self._V[layer_idx, batch_idx, :, idx, :][None]
+                    # Same axis fix for non-KV-Q path
+                    K = self._K[layer_idx, batch_idx, :, idx, :].transpose(1, 0, 2)[None]
+                    V = self._V[layer_idx, batch_idx, :, idx, :].transpose(1, 0, 2)[None]
 
         return K.astype(np.float32), V.astype(np.float32)
 

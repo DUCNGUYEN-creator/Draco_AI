@@ -1,19 +1,29 @@
 # DracoAI V1 — modeling/testing/test_cache.py
 # Copyright (C) 2026  Draco Studio and DUCNGUYEN-creator — GPL v3
-"""Unit tests for KVCache, PrefixCache, SnapshotStack.
+"""Unit tests for KVCache, PrefixCache, SnapshotStack, EngramCache, KV-Q.
 
-FIXES (this revision):
-  ✅ FIX-PREFIX-UNPACK : PrefixCache.get() returns a 4-tuple
-     (snap, plen, last_logits, engram_snap).  All test unpack sites updated
-     from the old 3-value form ``_, plen, ll = result`` to the correct
-     4-value form ``_, plen, ll, _ = result``.
+FIXES retained:
+  ✅ FIX-PREFIX-UNPACK : PrefixCache.get() returns a 4-tuple.
+
+NEW tests in this revision:
+  • TestKVCacheQuantized      — INT8 KV-Q store/retrieve/snapshot/checkpoint
+  • TestEngramAdvanceAPI      — advance_committed_end() lock-safe pointer
+  • TestKVQuantUtils          — kv_quantize / kv_dequantize utilities
 """
 import numpy as np
 import pytest
 from ..kv_cache.kv_cache     import KVCache
 from ..kv_cache.prefix_cache import PrefixCache
 from ..kv_cache.snapshot     import SnapshotStack
+from ..kv_cache.engram_cache import EngramCache, EngramBlock
+from ..kv_cache.kv_quant     import (kv_quantize, kv_dequantize,
+                                      kv_quantize_batch, kv_dequantize_batch,
+                                      kv_memory_bytes)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Original tests (all retained)
+# ─────────────────────────────────────────────────────────────────────────────
 
 class TestKVCache:
     @pytest.fixture
@@ -39,7 +49,6 @@ class TestKVCache:
         assert cache.current_length() == 5
 
     def test_get_pos_public(self, cache):
-        """get_pos() must be used instead of _cache_pos directly."""
         K, V = self._make_kv()
         cache.update(0, K, V)
         assert cache.get_pos(0) == 1
@@ -69,7 +78,6 @@ class TestKVCache:
         assert cache.current_length() == 8
 
     def test_vectorised_batch_update(self, cache):
-        """Vectorised fast path with seq > 1 should give same result as seq=1 loop."""
         K = np.random.randn(1, 2, 4, 16).astype(np.float32)
         V = np.random.randn(1, 2, 4, 16).astype(np.float32)
         cache.update(0, K, V)
@@ -103,15 +111,12 @@ class TestPrefixCache:
 
         result = pc.get(ids)
         assert result is not None
-
-        # ✅ FIX-PREFIX-UNPACK: get() returns 4-tuple, not 3-tuple
         snap, plen, ll, engram_snap = result
         assert plen == 5
         assert ll is not None
-        assert engram_snap is None   # not stored, so should be None
+        assert engram_snap is None
 
     def test_put_get_with_engram_snap(self):
-        """Engram snapshot is stored and retrieved correctly."""
         pc  = PrefixCache(max_entries=4)
         ids = [10, 20, 30]
         fake_engram = {"_n_blocks": 2, "_last_committed_end": 256}
@@ -150,12 +155,10 @@ class TestPrefixCache:
         assert pc.get(ids) is None
 
     def test_legacy_4tuple_handled(self):
-        """Old 4-tuple entries (snap, plen, ts, last_logits) are read safely."""
         import time
         pc = PrefixCache(max_entries=4)
         ids = [7, 8, 9]
         h   = pc._hash(ids)
-        # Manually inject a legacy 4-tuple (no engram_snap field)
         snap = self._make_snap()
         snap["_cache_pos"] = 3
         pc._store[h] = (snap, 3, time.perf_counter(), np.zeros(10))
@@ -164,7 +167,7 @@ class TestPrefixCache:
         assert result is not None
         _, plen, ll, engram_snap = result
         assert plen == 3
-        assert engram_snap is None   # padded with None
+        assert engram_snap is None
 
 
 class TestSnapshotStack:
@@ -207,3 +210,215 @@ class TestSnapshotStack:
         stack.rollback_to(1)
         assert stack.depth == 1
         assert cache.current_length() == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestKVCacheQuantized:
+    """INT8 KV-Q cache tests."""
+
+    @pytest.fixture
+    def qcache(self):
+        return KVCache(
+            n_layers=2, n_kv_heads=2, head_dim=16,
+            window=32, sink=4, use_kv_quant=True)
+
+    def _kv(self, seq=1):
+        K = np.random.randn(1, 2, seq, 16).astype(np.float32)
+        V = np.random.randn(1, 2, seq, 16).astype(np.float32)
+        return K, V
+
+    def test_update_get_accuracy(self, qcache):
+        """KV-Q round-trip error < 2% relative."""
+        K, V = self._kv()
+        qcache.update(0, K, V)
+        K_r, V_r = qcache.get(0)
+        assert K_r.shape == (1, 2, 1, 16)
+        rel_k = np.abs(K - K_r[0, :, :1, :]).max() / (np.abs(K).max() + 1e-9)
+        rel_v = np.abs(V - V_r[0, :, :1, :]).max() / (np.abs(V).max() + 1e-9)
+        assert rel_k < 0.02, f"K relative error too high: {rel_k:.3%}"
+        assert rel_v < 0.02, f"V relative error too high: {rel_v:.3%}"
+
+    def test_snapshot_restore_quant(self, qcache):
+        """Snapshot/restore works correctly with KV-Q."""
+        K, V = self._kv()
+        qcache.update(0, K, V)
+        snap = qcache.snapshot()
+        K2, V2 = self._kv()
+        qcache.update(0, K2, V2)
+        assert qcache.current_length() == 2
+        qcache.restore(snap)
+        assert qcache.current_length() == 1
+
+    def test_reset_clears_scales(self, qcache):
+        """reset() zeroes scale arrays too."""
+        K, V = self._kv()
+        qcache.update(0, K, V)
+        qcache.reset()
+        assert qcache.current_length() == 0
+        assert (qcache._K_scale == 1.0).all()
+
+    def test_memory_footprint_smaller(self, qcache):
+        """KV-Q cache has smaller memory footprint than float16."""
+        float_bytes = 2 * 1 * 2 * 32 * 16 * 2  # K+V, float16
+        q_bytes = qcache.memory_bytes()
+        # float16 equivalent: 2 layers * 2 heads * 32 window * 16 hdim * 2 bytes * 2 KV
+        float16_equiv = 2 * 1 * 2 * 32 * 16 * 2 * 2
+        assert q_bytes < float16_equiv
+
+    def test_checkpoint_roundtrip_quant(self, tmp_path, qcache):
+        K, V = self._kv(seq=3)
+        qcache.update(0, K, V)
+        path = str(tmp_path / "qcache")
+        qcache.save_checkpoint(path)
+        loaded = KVCache.load_checkpoint(path)
+        assert loaded._use_kv_quant
+        assert loaded.current_length() == qcache.current_length()
+
+    def test_delta_snapshot_with_quant(self, qcache):
+        """Delta snapshots record float32 old-values and restore correctly."""
+        K, V = self._kv()
+        qcache.update(0, K, V)
+        snap = qcache.snapshot(delta_threshold=10)
+        K2, V2 = self._kv()
+        qcache.update(0, K2, V2, snap=snap)
+        assert qcache.current_length() == 2
+        qcache.restore(snap)
+        assert qcache.current_length() == 1
+
+    def test_sliding_window_quant(self):
+        """Ring buffer wrap works correctly with KV-Q."""
+        cache = KVCache(n_layers=1, n_kv_heads=1, head_dim=4,
+                        window=8, sink=2, use_kv_quant=True)
+        for _ in range(12):
+            K = np.ones((1, 1, 1, 4), dtype=np.float32)
+            V = np.ones((1, 1, 1, 4), dtype=np.float32)
+            cache.update(0, K, V)
+        assert cache.current_length() == 8
+        K_r, V_r = cache.get(0)
+        assert K_r.shape[2] == 8
+
+
+class TestEngramAdvanceAPI:
+    """advance_committed_end() lock-safety tests."""
+
+    def _make_engram(self):
+        return EngramCache(
+            n_layers=1, n_kv_heads=1, head_dim=8,
+            d_model=16, block_size=4)
+
+    def test_advance_moves_pointer(self):
+        eng = self._make_engram()
+        assert eng._last_committed_end == 0
+        eng.advance_committed_end(16)
+        assert eng._last_committed_end == 16
+
+    def test_advance_is_monotonic(self):
+        """advance_committed_end never moves pointer backward."""
+        eng = self._make_engram()
+        eng.advance_committed_end(32)
+        eng.advance_committed_end(16)   # backward → no-op
+        assert eng._last_committed_end == 32
+
+    def test_advance_idempotent(self):
+        eng = self._make_engram()
+        eng.advance_committed_end(8)
+        eng.advance_committed_end(8)    # same value → no-op
+        assert eng._last_committed_end == 8
+
+    def test_advance_concurrent(self):
+        """Concurrent calls are safe (lock protected)."""
+        import threading
+        eng = self._make_engram()
+        errors = []
+
+        def _worker(end_pos):
+            try:
+                eng.advance_committed_end(end_pos)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=_worker, args=(i * 4,))
+                   for i in range(1, 16)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        assert not errors, f"Thread errors: {errors}"
+        # Final value must be max of all submitted values
+        assert eng._last_committed_end == 15 * 4
+
+    def test_commit_block_uses_lock(self):
+        """commit_block() respects advance_committed_end sentinel."""
+        eng = self._make_engram()
+        eng.advance_committed_end(128)  # mark as already committed
+        # A block ending at 128 or earlier should be rejected
+        n_l, n_h, bs, hd = 1, 1, 4, 8
+        K = np.random.randn(n_l, n_h, bs, hd).astype(np.float32)
+        V = np.random.randn(n_l, n_h, bs, hd).astype(np.float32)
+        committed = eng.commit_block(0, 128, K, V)
+        assert not committed, "Should be rejected (end_pos <= last_committed_end)"
+
+    def test_snapshot_restore_preserves_end(self):
+        """restore() sets _last_committed_end to snapshot value."""
+        eng = self._make_engram()
+        eng.advance_committed_end(64)
+        snap = eng.snapshot()
+        eng.advance_committed_end(128)
+        assert eng._last_committed_end == 128
+        eng.restore(snap)
+        assert eng._last_committed_end == 64
+
+
+class TestKVQuantUtils:
+    """Standalone kv_quant.py utility function tests."""
+
+    def test_quantize_dequantize_roundtrip(self):
+        x = np.random.randn(4, 8, 32).astype(np.float32)
+        q, scale = kv_quantize(x)
+        x_back = kv_dequantize(q, scale)
+        assert q.dtype == np.int8
+        assert scale.dtype == np.float16
+        rel_err = np.abs(x - x_back).max() / (np.abs(x).max() + 1e-9)
+        assert rel_err < 0.01, f"Relative error too high: {rel_err:.3%}"
+
+    def test_quantize_values_in_range(self):
+        x = np.random.randn(2, 16, 64).astype(np.float32)
+        q, _ = kv_quantize(x)
+        assert q.min() >= -127 and q.max() <= 127
+
+    def test_batch_quantize_shapes(self):
+        KV = np.random.randn(2, 1, 4, 32, 16).astype(np.float32)
+        q, scale = kv_quantize_batch(KV)
+        assert q.shape == KV.shape
+        assert q.dtype == np.int8
+        assert scale.shape == (*KV.shape[:-1], 1)
+        assert scale.dtype == np.float16
+
+    def test_batch_roundtrip_accuracy(self):
+        KV = np.random.randn(2, 1, 4, 32, 16).astype(np.float32)
+        q, scale = kv_quantize_batch(KV)
+        KV_back = kv_dequantize_batch(q, scale)
+        rel_err = np.abs(KV - KV_back).max() / (np.abs(KV).max() + 1e-9)
+        assert rel_err < 0.01
+
+    def test_memory_estimate_savings(self):
+        stats = kv_memory_bytes(
+            n_layers=8, max_batch=1, n_kv_heads=8,
+            window=1024, head_dim=128)
+        assert stats["quant_gb"] < stats["float_gb"]
+        assert stats["savings_pct"] > 40.0
+
+    def test_zero_tensor_quantize(self):
+        """Zero tensor should quantize to all-zero int8 without division issues."""
+        x = np.zeros((2, 4, 16), dtype=np.float32)
+        q, scale = kv_quantize(x)
+        assert np.all(q == 0)
+        x_back = kv_dequantize(q, scale)
+        np.testing.assert_array_equal(x_back, x)
+
+    def test_large_values_clamp(self):
+        """Large values saturate at ±127 without overflow."""
+        x = np.full((1, 1, 8), 1000.0, dtype=np.float32)
+        q, scale = kv_quantize(x)
+        assert q.max() <= 127 and q.min() >= -127

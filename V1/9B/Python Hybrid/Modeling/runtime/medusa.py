@@ -117,9 +117,14 @@ class MedusaHeads:
             self.set_lm_head(lm_head)
 
     def set_lm_head(self, lm_head: np.ndarray) -> None:
-        """Share the main LM head weights across all Medusa heads."""
+        """Share the main LM head weights across all Medusa heads.
+
+        lm_head is (vocab_size, d_model); W2 must be (d_model, vocab_size)
+        so that h1 @ W2 = (d_model,) @ (d_model, vocab_size) = (vocab_size,).
+        """
         for h in self.heads:
-            h.W2 = lm_head.astype(np.float32)
+            # lm_head shape: (vocab_size, d_model) -> need W2 = (d_model, vocab_size)
+            h.W2 = lm_head.astype(np.float32).T
 
     def draft(
         self,
