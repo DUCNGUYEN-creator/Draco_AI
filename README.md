@@ -580,4 +580,4 @@ If `modeling.transformer` fails to import (not installed, missing dependency), `
 GPL v3 © 2026 Draco Studio and DUCNGUYEN-creator
 
 ---
-Crafted with ❤️ in Vietnam — Draco Studio
+Built with ❤️ in Vietnam — Draco Studio
