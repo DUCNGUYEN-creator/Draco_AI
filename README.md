@@ -1,4 +1,9 @@
-# DracoAI V1
+<p align="center">
+  <img src="assets/logo.png" alt="Draco Logo" width="200">
+</p>
+
+---
+# Draco AI V1
 
 **Draco Studio — DUCNGUYEN-creator — GPL v3**
 
