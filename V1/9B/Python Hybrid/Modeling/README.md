@@ -74,7 +74,7 @@ modeling/
 │   ├── memory.py                 # RSS tracking, format_bytes
 │   └── threading.py                # RWLock, atomic_counter, once
 │
-└── testing/                   # pytest suite — 147 tests
+└── testing/                   
     ├── test_attention.py
     ├── test_quant.py
     ├── test_cache.py
@@ -470,7 +470,7 @@ security mechanism actually being relied upon.
 pytest modeling/testing/ -v
 ```
 
-147 test cases, organized by subsystem (`test_attention.py`,
+5 test cases, organized by subsystem (`test_attention.py`,
 `test_cache.py`, `test_quant.py`, `test_sampling.py`,
 `test_inference.py`). `test_inference.py` uses a tiny config
 (`d_model=64, n_layers=2, n_experts=4, vocab_size=256`) to keep the entire
