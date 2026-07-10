@@ -2,13 +2,13 @@
 
 **Draco Studio — DUCNGUYEN-creator — GPL v3**
 
-Package tách từ `engine_v1.py` (~3,775 dòng monolith) thành kiến trúc modular **277 module / 13,212 dòng / 47 thư mục** theo đúng thiết kế Hybrid Architecture:
+A package split off from `engine_v1.py` (a ~3,775-line monolith) into a modular architecture of **277 modules / 13,212 lines / 47 folders**, following the Hybrid Architecture design exactly:
 
 ```text
 Engine = Infrastructure + Cognition + Verification
 ```
 
-## Kiến trúc 3 tầng
+## 3-Layer Architecture
 
 ```text
                          ThinkingEngine
@@ -25,12 +25,12 @@ Engine = Infrastructure + Cognition + Verification
  planning/           └─ debate/         ├─ confidence_calibrator.py
  tools/              └─ execution/      ├─ answer_rewriter.py
                                         ├─ critic.py
-                                        └─ hallucination/    ← Chuyên sâu
+                                        └─ hallucination/    ← In-depth
 ```
 
-## Pipeline 12 tầng (Perception → Output)
+## 12-Stage Pipeline (Perception → Output)
 
-| # | Stage | Module | Nhiệm vụ |
+| # | Stage | Module | Task |
 |---|-------|--------|----------|
 | 1 | Perception | `perception/` | Sanitize, rewrite, intent, entity, metaphor, difficulty |
 | 2 | Memory Retrieval | `memory/` | Rerank, compress, episodic recall |
@@ -40,62 +40,62 @@ Engine = Infrastructure + Cognition + Verification
 | 6 | Tool Execution | `tools/` | Safe AST eval, sandbox, tool registry |
 | 7 | Reasoning Loop | `reasoning/thinking/` | Chain-of-thought verification, recursive reflection |
 | 8 | Verifier Layer | `reasoning/thinking/chain_verifier.py` | CoT soundness check |
-| 9 | Hallucination Assessment | `reflection/hallucination/` | 6-stage pipeline chuyên sâu |
+| 9 | Hallucination Assessment | `reflection/hallucination/` | In-depth 6-stage pipeline |
 | 10 | Reflection | `reflection/critic.py` | Recursive critique, post-generation check |
-| 11 | Answer Rewriter | `reflection/answer_rewriter.py` | Rewrite trigger nếu risk cao |
+| 11 | Answer Rewriter | `reflection/answer_rewriter.py` | Rewrite trigger if risk is high |
 | 12 | Output | `perception/prompt/compiler.py` | Compile [PLAN][THOUGHT][FINAL ANSWER] |
 
-## Hallucination Subsystem (Chuyên sâu)
+## Hallucination Subsystem (In-depth)
 
 ```text
 Evidence → Verification → Calibration → Correlation → Fusion → Risk → Report
 ```
 
-### 9 Verifiers (trái tim hệ thống)
+### 9 Verifiers (the heart of the system)
 
-| Verifier | Kiểm tra | Confidence |
+| Verifier | Checks | Confidence |
 |----------|----------|------------|
-| retrieval | Claim khớp evidence retrieved | Cao khi trust_score cao |
-| contradiction | Claim mâu thuẫn evidence (negation-flip, antonym) | Trung bình |
-| consistency | Claim đồng thuận với nhiều đường reasoning độc lập | Tăng theo n_paths |
-| numerical | Biểu thức số học đúng (deterministic, qua SafeASTEvaluator) | 0.9 cực cao |
-| symbolic | Mệnh đề logic (tautology/contradiction) hợp lệ | 0.85 khi applicable |
-| citation | `[hexid]` citation tồn tại trong CitationTracker | 0.9 vs registry |
-| planner | Claim khớp subgoals/kế hoạch đã cam kết | 0.4 soft signal |
-| tool | Claim khớp output tool thực tế (source tin cậy nhất) | 0.85 |
-| reasoning | Claim traceable từ reasoning trace đã chọn | 0.55 |
+| retrieval | Claim matches retrieved evidence | High when trust_score is high |
+| contradiction | Claim contradicts evidence (negation-flip, antonym) | Medium |
+| consistency | Claim agrees with multiple independent reasoning paths | Increases with n_paths |
+| numerical | Arithmetic expression is correct (deterministic, via SafeASTEvaluator) | Extremely high at 0.9 |
+| symbolic | Logical proposition (tautology/contradiction) is valid | 0.85 when applicable |
+| citation | `[hexid]` citation exists in CitationTracker | 0.9 vs registry |
+| planner | Claim matches committed subgoals/plan | 0.4 soft signal |
+| tool | Claim matches actual tool output (most trusted source) | 0.85 |
+| reasoning | Claim is traceable from the selected reasoning trace | 0.55 |
 
-### Phương pháp Calibration
+### Calibration Methods
 
 `platt` · `isotonic` · `beta` · `temperature` · `histogram` + `ensemble`
 
-### 5 Phương pháp Fusion
+### 5 Fusion Methods
 
-| Phương pháp | Đặc tính | Default |
+| Method | Characteristics | Default |
 |---|---|---|
-| noisy_or | Một tín hiệu mạnh áp đảo toàn bộ | ✓ |
-| weighted | Trung bình có trọng số, dễ giải thích | N/A |
-| bayesian | Update tuần tự, phân biệt tín hiệu âm/dương | N/A |
-| dempster_shafer | Xử lý abstain (mass-on-uncertainty) chính xác | N/A |
-| logistic | Tổng logit có trọng số, không nén xác suất cực | N/A |
+| noisy_or | One strong signal dominates all others | ✓ |
+| weighted | Weighted average, easy to interpret | N/A |
+| bayesian | Sequential update, distinguishes positive/negative signals | N/A |
+| dempster_shafer | Handles abstain (mass-on-uncertainty) precisely | N/A |
+| logistic | Weighted sum of logits, does not compress extreme probabilities | N/A |
 
-### 3 Strategy tiers (theo tài liệu kiến trúc)
+### 3 Strategy Tiers (per architecture documentation)
 
 | Strategy | Verifiers | Use case |
 |---|---|---|
 | fast | 2 (retrieval + contradiction) | INTENT_CHAT, low-latency |
-| balanced | 6 | DEFAULT cho mọi request |
-| paranoid | 9 (tất cả, tự động mở rộng khi đăng ký thêm) | High-stakes |
+| balanced | 6 | DEFAULT for every request |
+| paranoid | 9 (all, automatically expands as more are registered) | High-stakes |
 
-## Cấu trúc thư mục
+## Folder Structure
 
 ```text
 thinking_engine/
 ├── __init__.py           ← ThinkingEngine, EngineConfig
 ├── engine.py             ← ThinkingEngine (top-level facade)
 ├── pipeline.py           ← Global Pipeline 12-stage orchestrator
-├── state.py              ← ThinkingState (carrier xuyên suốt pipeline)
-├── config.py             ← EngineConfig (toàn bộ tuning knobs)
+├── state.py              ← ThinkingState (carrier throughout the pipeline)
+├── config.py             ← EngineConfig (all tuning knobs)
 ├── constants.py          ← expert indices, intent types, stage names
 ├── exceptions.py         ← Exception hierarchy
 │
@@ -128,20 +128,20 @@ thinking_engine/
 │   ├── answer_rewriter.py
 │   ├── critic.py                 ← Orchestrator: recursive_critique + post_generation_check
 │   └── hallucination/            ← Deep Verification subsystem
-│       ├── assessor.py           ← PUBLIC ENTRY POINT (duy nhất)
+│       ├── assessor.py           ← PUBLIC ENTRY POINT (the only one)
 │       ├── models/               ← Evidence, VerificationResult, FusionResult, Report, ...
-│       ├── verifiers/            ← 9 verifier chuyên biệt
+│       ├── verifiers/            ← 9 specialized verifiers
 │       ├── analyzers/            ← Taxonomy, Severity, Agreement, Outlier, Coverage, ...
 │       ├── calibration/          ← Platt/Isotonic/Beta/Temperature/Histogram/Ensemble
 │       ├── correlation/          ← Similarity, Dedup, ConnectedComponents, Reducer
 │       ├── fusion/               ← NoisyOr/Weighted/Bayesian/DempsterShafer/Logistic
 │       ├── metrics/              ← AUC, Brier, ECE, Drift, Reliability, Entropy, ...
 │       ├── pipeline/             ← 6-stage Evidence→Verification→...→Report
-│       ├── registry/             ← Plugin registry (không sửa code cũ khi thêm mới)
-│       ├── factory/              ← Factory với instance caching
+│       ├── registry/             ← Plugin registry (no need to modify old code when adding new ones)
+│       ├── factory/              ← Factory with instance caching
 │       ├── strategy/             ← fast/balanced/paranoid/custom
 │       ├── cache/                ← LRU+TTL: evidence, verifier, calibration, stats
-│       ├── benchmarks/           ← AUC/ECE/monotonicity benchmarks nội bộ
+│       ├── benchmarks/           ← Internal AUC/ECE/monotonicity benchmarks
 │       ├── docs/                 ← architecture.md, api.md, verifier.md, ...
 │       └── tests/                ← 13 test cases, 100% pass
 │
@@ -156,33 +156,33 @@ thinking_engine/
 ```python
 from thinking_engine import ThinkingEngine
 
-# Khởi tạo (stub bridge — không cần model thật để chạy)
+# Initialize (stub bridge — no real model needed to run)
 engine = ThinkingEngine()
 
 # Phase 1: compile prompt
 out = engine.process(
-    "Viết hàm Python tính giai thừa",
+    "Write a Python function to compute a factorial",
     history=[],
-    think_mode=False,           # True = kích hoạt Council Debate (8 expert)
+    think_mode=False,           # True = activate Council Debate (8 experts)
 )
 print(out.intent)               # {'intent': 'code', 'lang': 'vi', ...}
 print(out.expert_boost)         # {0: 0.04, 1: 0.48, 2: 0.27, ...}
 print(len(out.messages))        # 3 (system + plan + user)
 
-# Phase 2: sau khi LLM tạo ra response, đánh giá Hallucination + Reflection
+# Phase 2: after the LLM generates a response, evaluate Hallucination + Reflection
 final = engine.finish(
-    "Viết hàm Python tính giai thừa",
+    "Write a Python function to compute a factorial",
     generated_text="def factorial(n): return 1 if n<=1 else n*factorial(n-1)",
 )
 print(final.hallucination_report['risk_level'])   # 'none' / 'low' / 'medium' / 'high' / 'critical'
 print(final.hallucination_report['risk_score'])   # float [0.0, 1.0]
 print(final.hallucination_report['top_issues'])   # List[str]
 
-# Feedback loop (cải thiện router + calibration theo thời gian)
-engine.submit_feedback("Viết hàm Python...", "def factorial...", rating=0.95)
+# Feedback loop (improves router + calibration over time)
+engine.submit_feedback("Write a Python function...", "def factorial...", rating=0.95)
 ```
 
-## Dùng Hallucination Assessor độc lập
+## Using the Hallucination Assessor Standalone
 
 ```python
 from thinking_engine.reflection.hallucination import Assessor
@@ -197,7 +197,7 @@ print(report.risk_level)    # RiskLevel.CRITICAL
 print(report.top_issues)    # ["'2 + 2 = 5' but actual result is 4"]
 ```
 
-## Đăng ký verifier mới (plugin architecture)
+## Registering a New Verifier (Plugin Architecture)
 
 ```python
 from thinking_engine.reflection.hallucination.registry import VerifierRegistry
@@ -210,58 +210,58 @@ class MyEmbeddingVerifier:
 
 registry = VerifierRegistry()
 registry.register("embedding", MyEmbeddingVerifier)
-# Không cần sửa assessor.py hay strategy/*.py
+# No need to modify assessor.py or strategy/*.py
 ```
 
-## Nguồn gốc & So sánh với engine_v1.py
+## Origin & Comparison with engine_v1.py
 
 | Aspect | engine_v1.py | thinking_engine/ |
 |---|---|---|
-| Kích thước | ~3,775 dòng / 1 file | 13,212 dòng / 278 file |
-| Kiến trúc | Monolith (ThinkingEngineV1) | 3-layer: Infrastructure/Cognition/Verification |
-| Tầng Hallucination | SelfReflection.critique() inline | 6-stage deep pipeline, 9 verifiers |
-| Fusion | Không có | 5 phương pháp (noisy_or, bayesian, ...) |
-| Calibration | 1 Platt online | 5 phương pháp + ensemble |
+| Size | ~3,775 lines / 1 file | 13,212 lines / 278 files |
+| Architecture | Monolith (ThinkingEngineV1) | 3-layer: Infrastructure/Cognition/Verification |
+| Hallucination Layer | SelfReflection.critique() inline | In-depth 6-stage pipeline, 9 verifiers |
+| Fusion | None | 5 methods (noisy_or, bayesian, ...) |
+| Calibration | 1 online Platt | 5 methods + ensemble |
 | Search algorithms | BFS, DFS, A*, MCTS | + Beam, IDA*, Bidirectional |
-| Tests | 1 self-test block inline | 13 structured tests, 100% pass |
-| Plugin | Không có | Registry + Factory pattern |
-| Dependency separation | Tất cả trong 1 class | Tầng Verification không phụ thuộc Cognition |
-| Import sweep | N/A | 277/277 module, 0 lỗi |
+| Tests | 1 inline self-test block | 13 structured tests, 100% pass |
+| Plugin | None | Registry + Factory pattern |
+| Dependency separation | Everything in 1 class | Verification layer does not depend on Cognition |
+| Import sweep | N/A | 277/277 modules, 0 errors |
 
-## Liên kết với `modeling/transformer.py` (TransformerBridge thật)
+## Connection with `modeling/transformer.py` (the real TransformerBridge)
 
-`thinking_engine/` không phụ thuộc `numpy` hay `transformer.py` trực tiếp ở bất kỳ đâu ngoài một điểm duy nhất: `interfaces/llm.py`. Đây là toàn bộ cầu nối:
+`thinking_engine/` does not depend directly on `numpy` or `transformer.py` anywhere except at a single point: `interfaces/llm.py`. This is the entire bridge:
 
 ```python
-# engine.py, trong ThinkingEngine.__init__:
-raw_bridge   = load_default_bridge(numpy_model=numpy_model)   # thử import modeling.transformer.TransformerBridge
-adapter      = TransformerBridgeAdapter(raw_bridge)            # khớp API thật <-> API engine cần
-locked_bridge = LockedBridge(adapter, bridge_lock)              # khóa luồng cho ThreadPoolExecutor
+# engine.py, inside ThinkingEngine.__init__:
+raw_bridge   = load_default_bridge(numpy_model=numpy_model)   # attempts to import modeling.transformer.TransformerBridge
+adapter      = TransformerBridgeAdapter(raw_bridge)            # matches the real API <-> the API the engine needs
+locked_bridge = LockedBridge(adapter, bridge_lock)              # locks the stream for ThreadPoolExecutor
 ```
 
-### API thật của TransformerBridge (đã đối chiếu trực tiếp với transformer.py)
+### The Real TransformerBridge API (cross-checked directly against transformer.py)
 
-| Method/Property thật | Chữ ký |
+| Real Method/Property | Signature |
 |---|---|
-| `bridge.backend` | `@property -> "numpy"` hoặc `"llama.cpp"` |
-| `bridge.set_intent_boost(arr)` | nhận `np.ndarray[n_experts]`, lưu vào `self._intent_boost` |
-| `bridge.set_intent_bias(arr)` | nhận `np.ndarray[vocab_size]`, lưu vào `self._intent_bias` |
-| `bridge.generate(prompt_ids, max_new_tokens, temp, top_p, min_p, eos_id, eos_ids, use_speculative_tree, spec_tree_width, spec_tree_depth, deterministic, rep_alpha, temp_inertia, snap_delta_threshold, debug, stream_cb, profiler, stop_event, checkpoint_every, checkpoint_path, wal, ...)` | Đọc `self._intent_boost`/`self._intent_bias` nội bộ — KHÔNG nhận chúng làm kwargs |
+| `bridge.backend` | `@property -> "numpy"` or `"llama.cpp"` |
+| `bridge.set_intent_boost(arr)` | receives `np.ndarray[n_experts]`, stores into `self._intent_boost` |
+| `bridge.set_intent_bias(arr)` | receives `np.ndarray[vocab_size]`, stores into `self._intent_bias` |
+| `bridge.generate(prompt_ids, max_new_tokens, temp, top_p, min_p, eos_id, eos_ids, use_speculative_tree, spec_tree_width, spec_tree_depth, deterministic, rep_alpha, temp_inertia, snap_delta_threshold, debug, stream_cb, profiler, stop_event, checkpoint_every, checkpoint_path, wal, ...)` | Reads `self._intent_boost`/`self._intent_bias` internally — does NOT receive them as kwargs |
 
-`TransformerBridge` không có `is_connected()`, `expert_boost_to_array()`, `build_intent_bias()`, `to_generate_kwargs()` — đây là những method `thinking_engine` cần nhưng bridge thật không cung cấp, nên `TransformerBridgeAdapter` (`interfaces/llm.py`) đứng ra làm lớp chuyển đổi:
+`TransformerBridge` has no `is_connected()`, `expert_boost_to_array()`, `build_intent_bias()`, or `to_generate_kwargs()` — these are methods that `thinking_engine` needs but the real bridge does not provide, so `TransformerBridgeAdapter` (`interfaces/llm.py`) steps in as the conversion layer:
 
 ```python
 class TransformerBridgeAdapter:
-    def is_connected(self) -> bool: ...              # True khi backend là "numpy"/"llama.cpp" thật
+    def is_connected(self) -> bool: ...              # True when the backend is a real "numpy"/"llama.cpp"
     def expert_boost_to_array(self, {0: 0.5, ...}) -> np.ndarray: ...
     def build_intent_bias(self, [151643, ...]) -> np.ndarray: ...
-    def generate(self, prompt_ids, **kwargs) -> List[int]: ...              # proxy trực tiếp
-    def generate_from_engine_output(self, prompt_ids, engine_out, ...):     # gọi set_intent_boost/bias rồi generate()
+    def generate(self, prompt_ids, **kwargs) -> List[int]: ...              # direct proxy
+    def generate_from_engine_output(self, prompt_ids, engine_out, ...):     # calls set_intent_boost/bias, then generate()
 ```
 
-9 vị trí trong `reasoning/debate/council.py`, `reasoning/cognitive/{abduction,counterfactual}.py`, `reasoning/thinking/tree_of_thought.py`, `planning/{goal_decomposer,plan_decomposer}.py`, `memory/summarization.py` gọi `bridge.is_connected()` trước khi dùng `bridge.generate()` — toàn bộ đều nhận adapter (không phải TransformerBridge thô) qua `EngineComponents.bridge`, nên các lời gọi này hoạt động đúng với cả bridge thật lẫn `StubLLMBridge`.
+9 locations in `reasoning/debate/council.py`, `reasoning/cognitive/{abduction,counterfactual}.py`, `reasoning/thinking/tree_of_thought.py`, `planning/{goal_decomposer,plan_decomposer}.py`, and `memory/summarization.py` call `bridge.is_connected()` before using `bridge.generate()` — all of them receive the adapter (not the raw TransformerBridge) via `EngineComponents.bridge`, so these calls work correctly with both the real bridge and `StubLLMBridge`.
 
-### Cách cắm model thật vào
+### How to Plug in a Real Model
 
 ```python
 from thinking_engine import ThinkingEngine
@@ -271,11 +271,11 @@ model = DracoTransformerV1(config=my_model_config)
 engine = ThinkingEngine(numpy_model=model) 
 ```
 
-Nếu `modeling.transformer` không import được (chưa cài, thiếu dependency), `load_default_bridge()` tự rơi về `StubLLMBridge` — toàn bộ pipeline vẫn chạy được (không sinh token thật, nhưng mọi logic routing/reasoning/hallucination-assessment vẫn hoạt động để test).
+If `modeling.transformer` cannot be imported (not installed, missing dependency), `load_default_bridge()` automatically falls back to `StubLLMBridge` — the entire pipeline still runs (no real tokens are generated, but all routing/reasoning/hallucination-assessment logic still works for testing).
 
-## Dependency chính (ngoài stdlib)
+## Main Dependencies (Besides stdlib)
 
-Không có — toàn bộ math/graph/probability helpers được viết từ đầu trong `utils/`. `numpy` chỉ được import lười (bên trong hàm, không phải top-level) tại `interfaces/llm.py` khi `TransformerBridgeAdapter` cần dựng mảng — nên `thinking_engine/` cài đặt và chạy test được ngay cả khi không có `numpy`/`modeling.transformer` trong môi trường.
+None — all math/graph/probability helpers are written from scratch in `utils/`. `numpy` is only lazily imported (inside a function, not at the top level) in `interfaces/llm.py` when `TransformerBridgeAdapter` needs to construct an array — so `thinking_engine/` can be installed and tested even without `numpy`/`modeling.transformer` present in the environment.
 
 ## License
 
