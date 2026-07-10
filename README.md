@@ -3,13 +3,13 @@
 </p>
 
 ---
-# Draco AI V1
+# Draco AI V1 - Made In VN
 
 **Draco Studio — DUCNGUYEN-creator — GPL v3**
 
 ---
 
-Gmail: zintat1991@gmail.com
+Gmail: zintat19791@gmail.com
 
 Discord: https://discord.gg/dJXMbexdTh (Draco Studio)
 
