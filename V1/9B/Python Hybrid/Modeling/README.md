@@ -504,4 +504,4 @@ tests.
 
 ---
 
-GPL v3 Copyright (C) 2026 DUCNGUYEN-creator
+GPL v3 Copyright © 2026 DUCNGUYEN-creator
