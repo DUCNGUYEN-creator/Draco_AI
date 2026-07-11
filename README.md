@@ -83,6 +83,7 @@ Engine = Infrastructure + Cognition + Verification
 
 ### 1.3 Hallucination Subsystem (Deep Verification)
 
+
 ```text
 Evidence → Verification → Calibration → Correlation → Fusion → Risk → Report
 ```
