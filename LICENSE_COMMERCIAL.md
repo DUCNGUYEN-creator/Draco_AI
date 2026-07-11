@@ -1,34 +1,143 @@
-Draco AI - Commercial License & Supplemental Terms
-Copyright (C) 2026 Nguyen Huu Duc (DUCNGUYEN-creator / Draco Studio)
+Draco AI Commercial License & Supplemental Terms
+Copyright © 2026 Nguyen Huu Duc (DUCNGUYEN-creator / Draco Studio)
+1. Definitions
+"Software"
+ means the Draco AI source code, including but not limited to: all 
+files, scripts, architectural configurations, documentation, and any 
+other materials provided in the official repository. For the avoidance 
+of doubt, this definition does not include any pre-trained model weights or parameter files, unless explicitly stated otherwise.
+"Community License" means the GNU General Public License version 3 (GPL v3), as published by the Free Software Foundation.
+"Commercial Use"
+ means any use of the Software for the purpose of generating revenue, 
+profit, or any commercial advantage, including but not limited to:
+Integration into a product or service sold or licensed for a fee.
+Offering Software-as-a-Service (SaaS), cloud services, or any hosted solution based on the Software.
+Using
+ the Software internally within an organization to support commercial 
+activities or business operations (including internal tooling and 
+automation).
+Any other use not explicitly covered by personal, academic, educational, research, or non-profit purposes.
+"Licensee" means any individual or organization that uses the Software under this Commercial License.
+"Author" means Nguyen Huu Duc (DUCNGUYEN-creator / Draco Studio).
+2. Dual Licensing Model
+The Software is made available under a dual-licensing model:
 
-1. APPLICABILITY
-The Draco AI project is provided under a dual-licensing model:
+2.1 Community License (GPL v3)
+Any
+ use of the Software for personal, academic, educational, research, or 
+non-profit purposes is governed by the terms of the GNU General Public 
+License v3.
+Under the Community License, the Licensee must comply with all terms of GPL v3, including:
+The requirement to disclose source code.
+The requirement to distribute derivative works under the same license (copyleft).
+Attribution and Logo Requirements (as defined in Section 3) apply to all Community License users.
+2.2 Commercial License
+Any use of the Software for Commercial Use (as defined in Section 1) requires a separate Commercial License agreement.
+The
+ Commercial License grants the Licensee the right to use, modify, and 
+integrate the Software into commercial products or services without being bound by the open-source requirements of GPL v3. This means:
+The Licensee is NOT required to disclose their modifications or source code.
+The Licensee is NOT required to distribute derivative works under GPL v3.
+The Software can be used in proprietary, closed-source products.
+The Commercial License is not free and requires the payment of licensing fees as agreed between the Licensee and the Author.
+Attribution and Logo Requirements (Section 3) may be waived or modified under a separate Commercial License agreement, at the Author's discretion.
+3. Attribution and Identification (for Community License Only)
+Under the Community License, the Licensee must adhere to the following attribution requirements:
 
-Community License: Fully compliant with the GNU GPL v3 for personal, academic, educational, research, and non-profit purposes.
+Clearly display the copyright notice: Copyright 2026 DUCNGUYEN-creator.
+Display the official Draco Studio logo prominently in the user interface (where applicable) and in any documentation.
+Provide a direct link to the original repository: https://github.com/DUCNGUYEN-creator/Draco_AI.
+Any
+ model trained based on the Software must be programmed to self-identify
+ as "Draco AI" and as part of the Draco Studio ecosystem developed by 
+DUCNGUYEN-creator, whenever queried about its origin.
+Important: These attribution requirements do not apply
+ to Commercial License holders unless explicitly stated in their 
+commercial agreement. A Commercial License typically waives all logo and
+ "Powered by" requirements.
+4. Commercial License Terms
+4.1 Obtaining a Commercial License
+To obtain a Commercial License, the Licensee must contact the Author directly at the contact details provided in Section 9.
+The Author will provide a quote based on the scope of use, type of commercial activity, and expected revenue.
+A Commercial License is only valid upon receipt of full payment and a signed agreement between both parties.
+4.2 Rights Granted
+The
+ Commercial License grants the Licensee the worldwide, perpetual (unless
+ terminated), non-exclusive, and non-transferable right to:
+Use, modify, and adapt the Software for any purpose.
+Integrate the Software into commercial products or services.
+Distribute the Software in binary or source form, without the requirement to disclose modifications or source code (i.e., proprietary use is allowed).
+Remove or replace any required attribution or logo (if explicitly agreed in the contract).
+4.3 License Fees
+Licensing fees are determined on a case-by-case basis. Factors may include:
+The number of developers using the Software.
+The number of end users or customers.
+The anticipated revenue generated by the product or service.
+A one-time flat fee, a revenue-share percentage, or a combination may be proposed.
+The
+ Author reserves the right to offer discounts for startups, academic 
+spin-offs, or non-profit organizations seeking commercial use to fund 
+their mission.
+4.4 Royalty Reporting
+If the Commercial License includes a revenue-share component, the Licensee agrees to:
+Provide quarterly reports on relevant revenue.
+Allow the Author or their designated representative to audit the Licensee's books to verify compliance, with reasonable notice.
+Pay any owed royalties within 30 days of the reporting period end.
+5. Contributor License Agreement (CLA)
+The
+ Author accepts contributions (including code, documentation, bug fixes,
+ and feature implementations) from third-party contributors.
+All contributions to the Draco AI codebase are subject to a mandatory Contributor License Agreement (CLA).
+By
+ submitting a contribution, the contributor agrees to the CLA, which 
+grants the Author a permanent, irrevocable, worldwide, royalty-free, and
+ transferable license to:
+Use,
+ modify, and distribute the contribution as part of the Software under 
+both the Community License (GPL v3) and any Commercial License.
+Sublicense the contribution under the terms of the Commercial License.
+The
+ contributor retains ownership of the copyright to their contribution, 
+but grants the Author the necessary rights to include and commercialize 
+the contribution as described above.
+The full text of the CLA is available in the repository and must be reviewed before submitting any contribution.
+6. Warranty and Liability
+The
+ Software is provided "AS IS", without warranty of any kind, express or 
+implied, including but not limited to warranties of merchantability, 
+fitness for a particular purpose, and non-infringement.
+The
+ Author shall not be liable for any claim, damages, or other liability, 
+whether in an action of contract, tort, or otherwise, arising from, out 
+of, or in connection with the Software or the use or other dealings in 
+the Software.
+In no event shall the Author's total liability exceed the amount paid by the Licensee for the Commercial License.
+7. Termination
+The
+ Commercial License will terminate automatically if the Licensee fails 
+to comply with any term of this agreement, including the payment of 
+fees.
+Upon termination, the Licensee must cease all use of the Software and destroy all copies.
+Termination does not relieve the Licensee of any accrued obligations, including payment of outstanding fees.
+8. Violation and Enforcement
+Any unauthorized Commercial Use of the Software without a valid Commercial License constitutes a severe copyright infringement.
+The Author reserves the right to pursue all available legal remedies, including:
+Injunctive relief to stop the unauthorized use.
+Recovery of actual damages and profits attributable to the infringement.
+Recovery of statutory damages as provided by applicable copyright law.
+Minimum Statutory Damages: In the event of a willful violation, the Licensee agrees to a minimum statutory damages amount of $100,000 USD or the total illicit profits gained from the infringement, whichever is greater.
+The Licensee agrees to pay all reasonable attorney fees and costs incurred by the Author in enforcing this license.
+9. Governing Law
+This
+ agreement shall be governed by and construed in accordance with the 
+laws of the Socialist Republic of Vietnam, without regard to its 
+conflict of law provisions. The parties agree to submit to the exclusive
+ jurisdiction of the courts of Vietnam for any disputes arising from 
+this agreement.
+10. Contact Information
+For inquiries regarding Commercial Licensing, please contact the Author:
+Nguyen Huu Duc (DUCNGUYEN-creator)
 
-Commercial License: Mandatory for any organization or individual utilizing the Draco AI source code for commercial purposes, monetization, or business activities.
-
-2. ATTRIBUTION & IDENTIFICATION
-All users (including both free and commercial) are strictly required to:
-
-Display Copyright: Clearly state: "Copyright 2026 DUCNGUYEN-creator".
-
-Logo Usage: Use the official Draco Studio logo within the user interface (where applicable).
-
-Source Citation: Provide a direct link to the original repository: https://github.com/DUCNGUYEN-creator/Draco_AI.git.
-
-AI Identity: Any model trained based on this source code must be programmed to self-identify as "Draco AI", part of the Draco Studio ecosystem developed by DUCNGUYEN-creator, whenever queried about its origin.
-
-3. COMMERCIAL TERMS
-Any use of the source code for the purpose of generating profit, paid services, or integration into commercial products must:
-
-Directly contact the author (DUCNGUYEN-creator) to obtain explicit written consent.
-
-Fulfill royalty payments or licensing fees as per a separate agreement between the two parties.
-
-4. ENFORCEMENT & DAMAGES
-Any violation of the commercial terms or attribution requirements mentioned above shall be deemed a severe copyright infringement.
-
-The infringing party shall be held liable under applicable laws.
-
-The minimum statutory damages are set at 1,000,000 USD (One Million US Dollars) or the total illicit profits gained from the infringement (whichever is greater shall be applied as the basis for compensation).
+Email: zintat19791@gmail.com
+Discord: https://discord.com/invite/dJXMbexdTh
+GitHub: https://github.com/DUCNGUYEN-creator/Draco_AI
