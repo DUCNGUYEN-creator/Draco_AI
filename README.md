@@ -3,9 +3,9 @@
 </p>
 
 ---
-# Draco AI V1 - Made In VN
+# Draco AI V1
 
-**Draco Studio — DUCNGUYEN-creator — GPL v3**
+**Draco Studio — DUCNGUYEN-creator — GPL v3 — Built in Vietnam**
 
 ---
 
@@ -15,12 +15,44 @@ Discord: https://discord.gg/dJXMbexdTh (Draco Studio)
 
 ---
 
+## Project Status
+
+Draco AI is a **solo, work-in-progress project**: one developer building a transformer inference engine and a cognitive/reasoning layer from scratch, without a team or external funding. It is **not** a pretrained model — there are no released weights. It is a framework and runtime intended for restructuring existing dense models into a Mixture-of-Experts layout and running them efficiently on consumer-grade hardware.
+
+Please read this section before the rest of the README, since it sets expectations for everything below:
+
+- **Nothing here is production-hardened.** Several subsystems described in detail further down are working prototypes rather than finished, battle-tested components. In particular:
+  - The **Hallucination Subsystem** (§1.3) currently verifies claims with heuristic scoring rather than deep semantic verification; that upgrade is future work, not something already delivered.
+  - **Multi-Agent Debate** (`reasoning/debate/`) is currently single-model, role-based orchestration (one model playing multiple roles), not independent multi-agent debate between separate models.
+  - Some components referenced in design docs and internal audits are not yet wired into the runtime, and a couple of classes mentioned in planning notes (e.g. a spatial-reasoning solver, a multi-turn intent tracker) do not exist in the codebase yet.
+  - Thread-safety and encapsulation in a few runtime modules are known weak points currently being audited (see the `runtime/` notes in §2.8).
+- **Any performance or efficiency claims in this repo are internal/self-reported**, not independently reproduced third-party evaluations. Treat all such framing here as a design target, not a verified result, until backed by a reproducible benchmark script.
+- **The module/line counts below are approximate**, taken from an internal directory sweep at one point during the refactor; they will drift as the codebase changes, and are counted slightly differently in different tables (see the note under the overview table).
+- This project does not claim to be the first or only implementation of any particular technique (e.g. ternary quantization, tiered KV memory). Any comparison in this README to other named projects reflects this author's own reading of those projects' public code/docs at the time of writing — one contributor's opinion, not an audited or exhaustive comparison.
+
+**Draco AI is unfinished and could use help.** Issues, pull requests, and critical code review are genuinely welcome — see [Contributing](#contributing) below.
+
+## Table of Contents
+
+- [Project Status](#project-status)
+- [Prerequisites & Installation](#prerequisites--installation)
+- [Part 1 — `thinking_engine/` (Cognitive Layer)](#part-1--thinking_engine-cognitive-layer)
+- [Part 2 — `modeling/` (Inference Engine)](#part-2--modeling-inference-engine)
+- [Part 3 — Bridge Between the Two Packages](#part-3--bridge-between-the-two-packages)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
 DracoAI V1 consists of two independent packages that can be wired together through a single bridge point:
 
-| Package | Role | Size |
+| Package | Role | Approx. size |
 |---|---|---|
-| `thinking_engine/` | Cognitive layer — perception, reasoning, reflection, hallucination assessment | 277 modules / 13,212 lines / 47 directories |
+| `thinking_engine/` | Cognitive layer — perception, reasoning, reflection, hallucination assessment | ~277 modules / ~13,212 lines / 47 directories |
 | `modeling/` | Inference engine — pure-Python/NumPy transformer, KV cache, quantization, speculative decoding | Pure-Python + NumPy backend |
+
+*Note on the counts above: different tables in this README report 277 vs. 278 for `thinking_engine/`. That is most likely a modules-vs-files discrepancy (e.g. whether `__init__.py` files are included), not two independently verified figures — treat both as "~277" until an exact, reproducible count (e.g. `find thinking_engine -name '*.py' | wc -l`) is recorded in a future update.*
 
 The two packages are fully decoupled on dependencies: `thinking_engine/` does not import `numpy` or `modeling.transformer` anywhere except at a single point (`interfaces/llm.py`), so each package can be installed and tested independently of the other.
 
@@ -33,6 +65,22 @@ The two packages are fully decoupled on dependencies: `thinking_engine/` does no
                     │  Reflection/Halluc.  │ point   │  + TransformerBridge  │
                     └─────────────────────┘ (llm.py) └──────────────────────┘
 ```
+
+## Prerequisites & Installation
+
+- Python 3.10+
+- `modeling/` requires **NumPy** only. `triton` (GPU) and `numba` (CPU JIT) are optional accelerators that fall back silently to NumPy when not installed.
+- `thinking_engine/` requires **no dependency beyond the Python standard library** (see §3.3).
+
+```bash
+git clone https://github.com/DUCNGUYEN-creator/Draco_AI.git
+cd Draco_AI
+pip install numpy          # required for modeling/
+# optional accelerators:
+pip install triton numba
+```
+
+There is no packaged release yet (no PyPI package, no pretrained weights to download) — this is source-only at this stage.
 
 ---
 
@@ -252,7 +300,7 @@ registry.register("embedding", MyEmbeddingVerifier)
 
 | Aspect | engine_v1.py | thinking_engine/ |
 |---|---|---|
-| Size | ~3,775 lines / 1 file | 13,212 lines / 278 files |
+| Size | ~3,775 lines / 1 file | ~13,212 lines / ~277 files (see note on counts above) |
 | Architecture | Monolith (ThinkingEngineV1) | 3-layer: Infrastructure/Cognition/Verification |
 | Hallucination layer | SelfReflection.critique() inline | 6-stage deep pipeline, 9 verifiers |
 | Fusion | None | 5 methods (noisy_or, bayesian, ...) |
@@ -262,6 +310,14 @@ registry.register("embedding", MyEmbeddingVerifier)
 | Plugin | None | Registry + Factory pattern |
 | Dependency separation | All in 1 class | Verification layer does not depend on Cognition |
 | Import sweep | N/A | 277/277 modules, 0 errors |
+
+### 1.9 Running Tests
+
+```bash
+pytest thinking_engine/reflection/hallucination/tests/ -v
+```
+
+The hallucination subsystem currently has **13 test cases, all passing** as of this writing — these cover the 9 verifiers, 5 fusion methods, and 5 calibration methods described in §1.3. This is the only part of `thinking_engine/` with a dedicated, structured test suite so far; most other subpackages (`reasoning/`, `planning/`, `memory/`, etc.) do not yet have equivalent automated coverage. Expanding test coverage across the rest of the package is tracked in the [Roadmap](#roadmap).
 
 ---
 
@@ -573,6 +629,41 @@ If `modeling.transformer` fails to import (not installed, missing dependency), `
 
 - **`thinking_engine/`**: no dependency beyond stdlib — all math/graph/probability helpers are written from scratch in `utils/`. `numpy` is only lazily imported (inside a function, not at the top level) in `interfaces/llm.py` when `TransformerBridgeAdapter` needs to build an array — so `thinking_engine/` can be installed and tested even without `numpy`/`modeling.transformer` present in the environment.
 - **`modeling/`**: no required dependency beyond NumPy. Triton and Numba are optional accelerators that fall back silently when unavailable.
+
+---
+
+## Roadmap
+
+This is a direction, not a committed timeline — it's maintained by one person alongside everything else, so dates are intentionally not given.
+
+**Phase 1 — Optimization & Stabilization (current focus)**
+- Reduce latency and improve verifier accuracy in the `thinking_engine/` pipeline; refine the 12-stage orchestration.
+- Fix the known issues currently tracked from internal audits (missing classes, unwired components, thread-safety gaps in `runtime/`).
+- Improve KV-cache efficiency, quantization stability, and speculative-decoding throughput in `modeling/`.
+- Expand automated test coverage beyond the hallucination subsystem (see §1.9).
+
+**Phase 2 — Core Expansion (not started)**
+- A dedicated long-term Memory Engine that persists context across sessions.
+- A graph-based Mapping Tool for relating internal representations across modalities/reasoning paths.
+- A lightweight, pure-Python/NumPy Trainer Engine for fine-tuning Draco models without external ML-framework dependencies.
+
+**Phase 3 — Full-Scale Training (not started)**
+- Use the Trainer Engine above to train or continue pre-training Draco models on curated data, with reproducible logging.
+
+**Phase 4 — Draco V2 ("Omni") (long-term research direction, not started)**
+- Exploratory direction toward multi-modal support (text, vision, audio). This is speculative and far out; it is **not** a near-term commitment, and no V2 work will begin before V1's current feature set is stable and well-tested.
+
+## Contributing
+
+This project genuinely needs outside eyes — it's too large for one person to finish or fully audit alone. Contributions, bug reports, and skeptical code review are all welcome, including (especially) reports that point out something the README overstates or gets wrong.
+
+1. Fork the repository.
+2. Create a feature branch (`git checkout -b feature/your-feature`).
+3. Make your changes, with tests where practical.
+4. Run the existing suites (`pytest modeling/testing/ -v` and `pytest thinking_engine/reflection/hallucination/tests/ -v`) and confirm they still pass before submitting.
+5. Open a pull request describing what changed and why.
+
+If you're not sure where to start, opening an issue with questions or a review of an existing module is just as useful as a code change.
 
 ---
 
