@@ -23,7 +23,7 @@ Please read this section before the rest of the README, since it sets expectatio
 
 - **Nothing here is production-hardened.** Several subsystems described in detail further down are working prototypes rather than finished, battle-tested components. In particular:
   - The **Hallucination Subsystem** (§1.3) currently verifies claims with heuristic scoring rather than deep semantic verification; that upgrade is future work, not something already delivered.
-  - **Multi-Agent Debate** (`reasoning/debate/`) is currently single-model, role-based orchestration (one model playing multiple roles), not independent multi-agent debate between separate models.
+  - **Multi-Agent Debate** (`reasoning/debate/`) is currently debate between multiple experts inside the same underlying MoE model (role-conditioned routing across experts), not independent debate between separate models. "Council Debate (8 experts)" refers to this — 8 experts of one model, not 8 separate models.
   - Some components referenced in design docs and internal audits are not yet wired into the runtime, and a couple of classes mentioned in planning notes (e.g. a spatial-reasoning solver, a multi-turn intent tracker) do not exist in the codebase yet.
   - Thread-safety and encapsulation in a few runtime modules are known weak points currently being audited (see the `runtime/` notes in §2.8).
 - **Any performance or efficiency claims in this repo are internal/self-reported**, not independently reproduced third-party evaluations. Treat all such framing here as a design target, not a verified result, until backed by a reproducible benchmark script.
